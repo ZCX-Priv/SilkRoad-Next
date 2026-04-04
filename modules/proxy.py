@@ -7,14 +7,23 @@
 - 处理响应并返回给客户端
 - 协调URL修正模块
 
+V2 扩展功能：
+- 连接池管理（ConnectionPool）
+- 线程池管理（ThreadPoolManager）
+- 会话管理（SessionManager）
+- 缓存管理（CacheManager）
+- 黑名单拦截（BlacklistManager）
+- 脚本注入（ScriptInjector）
+
 Author: SilkRoad-Next Team
-Version: 1.0.0
+Version: 2.0.0
 """
 
 import asyncio
 import gzip
 import json
 import zlib
+import re
 from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, urljoin
 import aiohttp
@@ -23,6 +32,14 @@ from modules.url.handle import URLHandler
 from modules.url.cookie import CookieHandler
 from modules.ua import UAHandler
 from modules.pageserver import PageServer
+
+# V2 模块导入
+from modules.connectionpool import ConnectionPool, ConnectionPoolFullError
+from modules.threadpool import ThreadPoolManager
+from modules.sessions import SessionManager
+from modules.cachemanager import CacheManager
+from modules.blacklist import BlacklistManager, BlacklistError
+from modules.scripts import ScriptInjector
 
 if TYPE_CHECKING:
     from modules.command import CommandHandler
@@ -67,6 +84,7 @@ class ProxyServer:
         self.server = None
         self.session = None
 
+        # V1 模块初始化
         self.url_handler = URLHandler(config, logger)
         self.ua_handler = UAHandler()
         self.cookie_handler = CookieHandler()
@@ -82,14 +100,105 @@ class ProxyServer:
         self.max_redirects = config.get('server.proxy.maxRedirects', 10)
         self.stream_threshold = config.get('urlRewrite.streamThreshold', 10485760)  # 10MB
 
+        # ========== V2 模块初始化 ==========
+        # 连接池管理器
+        self.connection_pool: Optional[ConnectionPool] = None
+        # 线程池管理器
+        self.thread_pool: Optional[ThreadPoolManager] = None
+        # 会话管理器
+        self.session_manager: Optional[SessionManager] = None
+        # 缓存管理器
+        self.cache_manager: Optional[CacheManager] = None
+        # 黑名单管理器
+        self.blacklist_manager: Optional[BlacklistManager] = None
+        # 脚本注入器
+        self.script_injector: Optional[ScriptInjector] = None
+
+        # V2 功能启用标志
+        self.v2_enabled = config.get('v2.enabled', True)
+
+        # 初始化 V2 模块
+        if self.v2_enabled:
+            self._init_v2_modules()
+
+    def _init_v2_modules(self) -> None:
+        """
+        初始化所有 V2 模块
+
+        根据配置文件初始化连接池、线程池、会话管理、缓存管理、黑名单和脚本注入模块。
+        """
+        try:
+            # 连接池管理器
+            connection_pool_config = self.config.get('connectionPool', {})
+            self.connection_pool = ConnectionPool(
+                max_connections_per_host=connection_pool_config.get('maxConnectionsPerHost', 10),
+                connection_timeout=connection_pool_config.get('connectionTimeout', 30),
+                keep_alive_timeout=connection_pool_config.get('keepAliveTimeout', 60)
+            )
+            self.logger.info(f"连接池管理器初始化完成: {connection_pool_config}")
+
+            # 线程池管理器
+            thread_pool_config = self.config.get('threadPool', {})
+            self.thread_pool = ThreadPoolManager(
+                max_workers=thread_pool_config.get('maxWorkers', None)
+            )
+            self.logger.info(f"线程池管理器初始化完成: max_workers={thread_pool_config.get('maxWorkers', 'auto')}")
+
+            # 会话管理器
+            session_config = self.config.get('session', {})
+            self.session_manager = SessionManager(
+                session_timeout=session_config.get('timeout', 1800),
+                cleanup_interval=session_config.get('cleanupInterval', 60),
+                max_data_size=session_config.get('maxDataSize', 1024 * 1024)  # 1MB
+            )
+            self.logger.info(f"会话管理器初始化完成: timeout={session_config.get('timeout', 1800)}s")
+
+            # 缓存管理器
+            cache_config = self.config.get('cache', {})
+            self.cache_manager = CacheManager(
+                max_memory_cache_size=cache_config.get('maxMemoryCacheSize', 100 * 1024 * 1024),  # 100MB
+                max_disk_cache_size=cache_config.get('maxDiskCacheSize', 1024 * 1024 * 1024),  # 1GB
+                default_ttl=cache_config.get('defaultTTL', 3600),
+                disk_cache_dir=cache_config.get('diskCacheDir', './cache')
+            )
+            self.logger.info(f"缓存管理器初始化完成: memory={cache_config.get('maxMemoryCacheSize', 100 * 1024 * 1024) // (100 * 1024 * 1024)} bytes")
+
+            # 黑名单管理器
+            blacklist_config = self.config.get('blacklist', {})
+            if blacklist_config.get('enabled', True):
+                self.blacklist_manager = BlacklistManager(
+                    config_file=blacklist_config.get('configFile', 'databases/blacklist.json')
+                )
+                self.logger.info(f"黑名单管理器初始化完成: {blacklist_config.get('configFile', 'databases/blacklist.json')}")
+            else:
+                self.blacklist_manager = None
+                self.logger.info("黑名单管理器已禁用")
+
+            # 脚本注入器
+            scripts_config = self.config.get('scripts', {})
+            if scripts_config.get('enabled', True):
+                self.script_injector = ScriptInjector(
+                    config_file=scripts_config.get('configFile', 'databases/scripts.json')
+                )
+                self.logger.info(f"脚本注入器初始化完成: {scripts_config.get('configFile', 'databases/scripts.json')}")
+            else:
+                self.script_injector = None
+                self.logger.info("脚本注入器已禁用")
+
+            self.logger.info("V2 模块初始化完成")
+
+        except Exception as e:
+            self.logger.error(f"V2 模块初始化失败: {e}")
+            raise
+
     async def start(self) -> None:
         """
         启动代理服务器
 
         创建 aiohttp.ClientSession 和 asyncio.Server，开始监听连接。
+        同时启动 V2 模块的清理任务。
         """
         try:
-            # 创建 HTTP 客户端会话
             timeout = aiohttp.ClientTimeout(
                 total=self.request_timeout,
                 connect=self.timeout
@@ -97,13 +206,12 @@ class ProxyServer:
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=aiohttp.TCPConnector(
-                    limit=100,  # 连接池大小
-                    ttl_dns_cache=300,  # DNS缓存时间
+                    limit=100,
+                    ttl_dns_cache=300,
                     enable_cleanup_closed=True
                 )
             )
 
-            # 启动 TCP 服务器
             self.server = await asyncio.start_server(
                 self._handle_connection,
                 self.host,
@@ -113,19 +221,29 @@ class ProxyServer:
 
             self.is_running = True
 
-            # 获取实际监听地址
             addr = self.server.sockets[0].getsockname()
             self.logger.info(f"代理服务器启动成功: {addr[0]}:{addr[1]}")
             self.logger.info(f"最大并发连接数: {self.config.get('server.proxy.maxConnections', 2000)}")
 
-            # 开始服务
+            if self.session_manager:
+                await self.session_manager.start_cleanup_task()
+                self.logger.info("会话管理器清理任务已启动")
+
+            if self.cache_manager:
+                asyncio.create_task(self._cache_cleanup_task())
+                self.logger.info("缓存管理器清理任务已启动")
+
+            if self.blacklist_manager:
+                asyncio.create_task(self._blacklist_reload_task())
+                self.logger.info("黑名单管理器热重载任务已启动")
+
             async with self.server:
                 await self.server.serve_forever()
 
         except OSError as e:
-            if e.errno == 10048:  # Windows 端口占用
+            if e.errno == 10048:
                 self.logger.error(f"端口 {self.port} 已被占用")
-            elif e.errno == 98:  # Linux 端口占用
+            elif e.errno == 98:
                 self.logger.error(f"端口 {self.port} 已被占用")
             else:
                 self.logger.error(f"启动代理服务器失败: {e}")
@@ -137,6 +255,41 @@ class ProxyServer:
             if self.session:
                 await self.session.close()
             raise
+
+    async def _cache_cleanup_task(self) -> None:
+        """
+        缓存清理任务
+
+        定期清理过期的缓存项。
+        """
+        while self.is_running:
+            try:
+                await asyncio.sleep(300)  # 每5分钟清理一次
+                if self.cache_manager:
+                    await self.cache_manager.cleanup_expired()
+                    self.logger.debug("缓存清理任务执行完成")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"缓存清理任务错误: {e}")
+
+    async def _blacklist_reload_task(self) -> None:
+        """
+        黑名单热重载任务
+
+        定期检查并重载黑名单配置。
+        """
+        while self.is_running:
+            try:
+                await asyncio.sleep(60)  # 每60秒检查一次
+                if self.blacklist_manager:
+                    if await self.blacklist_manager.check_config_modified():
+                        await self.blacklist_manager.reload_config()
+                        self.logger.info("黑名单配置已热重载")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"黑名单热重载任务错误: {e}")
 
     async def stop(self) -> None:
         """
@@ -157,6 +310,27 @@ class ProxyServer:
         if self.session:
             await self.session.close()
             self.logger.info("HTTP 客户端会话已关闭")
+
+        # ========== 关闭 V2 模块 ==========
+        # 匉止会话清理任务
+        if self.session_manager:
+            await self.session_manager.stop_cleanup_task()
+            self.logger.info("会话管理器清理任务已停止")
+
+        # 关闭连接池
+        if self.connection_pool:
+            await self.connection_pool.close_all()
+            self.logger.info("连接池已关闭")
+
+        # 关闭线程池
+        if self.thread_pool:
+            self.thread_pool.shutdown(wait=True)
+            self.logger.info("线程池已关闭")
+
+        # 清空缓存（可选）
+        if self.cache_manager:
+            await self.cache_manager.clear_all()
+            self.logger.info("缓存管理器已清空")
 
         self.logger.info("代理服务器已停止")
 
@@ -204,27 +378,32 @@ class ProxyServer:
         """
         处理 HTTP 请求
 
-        完整的请求处理流程：
+        完整的请求处理流程（V2增强版）：
         1. 解析请求行
         2. 解析请求头
         3. 解析目标 URL
-        4. 读取请求体（如果有）
-        5. 构建转发请求
-        6. 发送请求到目标服务器
-        7. 处理响应并返回
+        4. V2: 黑名单检查
+        5. V2: 会话管理
+        6. V2: 缓存检查
+        7. 读取请求体（如果有）
+        8. 构建转发请求
+        9. 发送请求到目标服务器
+        10. V2: 脚本注入
+        11. V2: 缓存结果
+        12. 处理响应并返回
 
         Args:
             reader: 流读取器
             writer: 流写入器
         """
-        # 1. 解析请求行
+        client_ip = writer.get_extra_info('peername')[0] if writer.get_extra_info('peername') else 'unknown'
+        
         request_line = await asyncio.wait_for(
             reader.readline(),
             timeout=self.timeout
         )
 
         if not request_line or request_line == b'\r\n':
-            # 空请求或心跳包
             return
 
         try:
@@ -244,7 +423,6 @@ class ProxyServer:
                 await self._send_error(writer, 404, "Command Interface Disabled")
                 return
 
-        # 检查是否为静态页面请求
         static_result = await self.page_server.handle_request(path)
         if static_result:
             content, mime_type = static_result
@@ -258,19 +436,51 @@ class ProxyServer:
             await self._send_error(writer, 400, "Bad Request")
             return
 
-        # 3. 解析目标 URL
         target_url = self._parse_target_url(path, headers)
         if not target_url:
             self.logger.warning(f"无效的目标 URL: {path}")
             await self._send_error(writer, 400, "Invalid URL")
             return
 
-        # 4. 读取请求体（如果有）
+        # ========== V2: 黑名单检查 ==========
+        if self.blacklist_manager:
+            try:
+                from urllib.parse import urlparse
+                parsed_url = urlparse(target_url)
+                domain = parsed_url.netloc.split(':')[0] if ':' in parsed_url.netloc else parsed_url.netloc
+                is_blocked, reason = await self.blacklist_manager.is_blocked(client_ip, target_url, domain)
+                if is_blocked:
+                    self.logger.warning(f"黑名单拦截: {reason} - {target_url}")
+                    await self._send_blocked_response(writer, reason, reason)
+                    return
+            except Exception as e:
+                self.logger.error(f"黑名单检查错误: {e}")
+
+        # ========== V2: 会话管理 ==========
+        session_id = None
+        session_data = None
+        if self.session_manager:
+            session_id = headers.get('X-Session-ID') or headers.get('Cookie', '').split('session=')[-1].split(';')[0] if 'session=' in headers.get('Cookie', '') else None
+            if session_id:
+                session_data = await self.session_manager.get_session(session_id)
+            if not session_id or not session_data:
+                session_id = await self.session_manager.create_session(client_ip=client_ip)
+                session_data = {}
+
+        # ========== V2: 缓存检查 ==========
+        cache_key = None
+        if self.cache_manager and method == 'GET':
+            cache_key = target_url
+            cached_response = await self.cache_manager.get(cache_key)
+            if cached_response:
+                self.logger.debug(f"缓存命中: {target_url}")
+                await self._send_cached_response(writer, cached_response, session_id)
+                return
+
         body = None
         if method in ['POST', 'PUT', 'PATCH']:
             content_length = int(headers.get('Content-Length', 0))
             if content_length > 0:
-                # 检查请求体大小限制
                 max_request_size = self.config.get('security.maxRequestSize', 52428800)
                 if content_length > max_request_size:
                     self.logger.warning(f"请求体过大: {content_length} bytes")
@@ -287,11 +497,13 @@ class ProxyServer:
                     await self._send_error(writer, 408, "Request Timeout")
                     return
 
-        # 5. 构建转发请求头
         forward_headers = self._build_forward_headers(headers, target_url)
+        
+        if session_id and self.session_manager:
+            forward_headers['X-Session-ID'] = session_id
 
-        # 6. 发送请求到目标服务器（支持重定向）
-        await self._forward_request(writer, method, target_url, forward_headers, body)
+        await self._forward_request_v2(writer, method, target_url, forward_headers, body, 
+                                        cache_key, session_id)
 
     def _parse_request_line(self, request_line: bytes) -> Tuple[str, str, str]:
         """
@@ -560,10 +772,21 @@ class ProxyServer:
                                 method: str, target_url: str,
                                 headers: Dict[str, str],
                                 body: Optional[bytes]) -> None:
-        """
-        转发请求到目标服务器
+        await self._forward_request_v2(writer, method, target_url, headers, body, None, None)
 
-        支持重定向处理，最多跟随 max_redirects 次重定向。
+    async def _forward_request_v2(self, writer: asyncio.StreamWriter,
+                                   method: str, target_url: str,
+                                   headers: Dict[str, str],
+                                   body: Optional[bytes],
+                                   cache_key: Optional[str],
+                                   session_id: Optional[str]) -> None:
+        """
+        V2增强版请求转发
+
+        在原有转发基础上增加：
+        - 连接池管理
+        - 脚本注入
+        - 响应缓存
 
         Args:
             writer: 流写入器
@@ -571,6 +794,8 @@ class ProxyServer:
             target_url: 目标 URL
             headers: 请求头
             body: 请求体
+            cache_key: 缓存键
+            session_id: 会话ID
         """
         assert self.session is not None
         current_url = target_url
@@ -578,16 +803,14 @@ class ProxyServer:
 
         while redirect_count <= self.max_redirects:
             try:
-                # 发送请求
                 async with self.session.request(
                     method,
                     current_url,
                     headers=headers,
                     data=body,
-                    allow_redirects=False,  # 手动处理重定向
-                    ssl=False  # 允许自签名证书
+                    allow_redirects=False,
+                    ssl=False
                 ) as response:
-                    # 检查是否为重定向
                     if response.status in [301, 302, 303, 307, 308]:
                         redirect_count += 1
 
@@ -596,30 +819,26 @@ class ProxyServer:
                             await self._send_error(writer, 508, "Loop Detected")
                             return
 
-                        # 获取重定向 URL
                         location = response.headers.get('Location')
                         if not location:
                             self.logger.warning("重定向响应缺少 Location 头")
                             await self._send_error(writer, 502, "Bad Gateway")
                             return
 
-                        # 解析重定向 URL
                         current_url = self._resolve_redirect_url(current_url, location)
                         self.logger.debug(f"重定向到: {current_url}")
 
-                        # 更新 Host 头
                         parsed = urlparse(current_url)
                         headers['Host'] = parsed.netloc
 
-                        # 303 重定向需要改为 GET 方法
                         if response.status == 303:
                             method = 'GET'
                             body = None
 
                         continue
 
-                    # 正常响应，处理并发送
-                    await self._send_response(writer, response, current_url)
+                    await self._send_response_v2(writer, response, current_url, 
+                                                  cache_key, session_id)
                     return
 
             except asyncio.TimeoutError:
@@ -637,7 +856,6 @@ class ProxyServer:
                 await self._send_error(writer, 500, "Internal Server Error")
                 return
 
-        # 超过最大重定向次数
         self.logger.warning(f"重定向次数超过限制: {redirect_count}")
         await self._send_error(writer, 508, "Loop Detected")
 
@@ -669,15 +887,26 @@ class ProxyServer:
     async def _send_response(self, writer: asyncio.StreamWriter,
                               response: aiohttp.ClientResponse,
                               target_url: str) -> None:
-        """
-        发送响应给客户端
+        await self._send_response_v2(writer, response, target_url, None, None)
 
-        处理响应体、解压缩、URL修正、重新压缩等。
+    async def _send_response_v2(self, writer: asyncio.StreamWriter,
+                                 response: aiohttp.ClientResponse,
+                                 target_url: str,
+                                 cache_key: Optional[str],
+                                 session_id: Optional[str]) -> None:
+        """
+        V2增强版响应发送
+
+        在原有响应发送基础上增加：
+        - 脚本注入
+        - 响应缓存
 
         Args:
             writer: 流写入器
             response: 目标服务器的响应对象
             target_url: 目标 URL
+            cache_key: 缓存键
+            session_id: 会话ID
         """
         try:
             content_length = int(response.headers.get('Content-Length', 0))
@@ -704,6 +933,14 @@ class ProxyServer:
                 except Exception as e:
                     self.logger.error(f"URL 修正失败: {e}")
 
+            # ========== V2: 脚本注入 ==========
+            if self.script_injector and self._should_inject_script(content_type):
+                try:
+                    content = await self.script_injector.inject_scripts(content, target_url, content_type)
+                    self.logger.debug(f"脚本注入完成: {target_url}")
+                except Exception as e:
+                    self.logger.error(f"脚本注入失败: {e}")
+
             content, encoding = await self._compress_content(content)
 
             headers = dict(response.headers)
@@ -714,7 +951,7 @@ class ProxyServer:
             else:
                 headers.pop('Content-Encoding', None)
 
-            headers['Via'] = 'SilkRoad-Next/1.0'
+            headers['Via'] = 'SilkRoad-Next/2.0'
 
             headers.pop('Transfer-Encoding', None)
             headers.pop('Content-Security-Policy', None)
@@ -727,6 +964,16 @@ class ProxyServer:
                 set_cookie_values = headers.pop('Set-Cookie')
             elif 'set-cookie' in headers:
                 set_cookie_values = headers.pop('set-cookie')
+
+            # ========== V2: 添加会话Cookie ==========
+            if session_id and self.session_manager:
+                session_cookie = f"session={session_id}; Path=/; HttpOnly"
+                if set_cookie_values is None:
+                    set_cookie_values = [session_cookie]
+                elif isinstance(set_cookie_values, str):
+                    set_cookie_values = [set_cookie_values, session_cookie]
+                else:
+                    set_cookie_values.append(session_cookie)
 
             status_line = f"HTTP/1.1 {response.status} {response.reason}\r\n"
             writer.write(status_line.encode('utf-8'))
@@ -751,10 +998,164 @@ class ProxyServer:
             writer.write(content)
             await writer.drain()
 
+            # ========== V2: 缓存响应 ==========
+            if cache_key and self.cache_manager and response.status == 200:
+                try:
+                    await self.cache_manager.set(cache_key, content, ttl=self.config.get('cache.defaultTTL', 3600))
+                    self.logger.debug(f"响应已缓存: {target_url}")
+                except Exception as e:
+                    self.logger.error(f"缓存响应失败: {e}")
+
             self.logger.debug(f"响应已发送: {response.status} {len(content)} bytes")
 
         except Exception as e:
             self.logger.error(f"发送响应失败: {e}")
+            raise
+
+    def _should_inject_script(self, content_type: str) -> bool:
+        """
+        判断是否需要注入脚本
+
+        Args:
+            content_type: 内容类型
+
+        Returns:
+            是否需要注入
+        """
+        if not content_type:
+            return False
+
+        inject_types = ['text/html', 'application/xhtml+xml']
+        content_type_lower = content_type.lower()
+        
+        for ct in inject_types:
+            if ct in content_type_lower:
+                return True
+
+        return False
+
+    async def _send_blocked_response(self, writer: asyncio.StreamWriter,
+                                      message: str, reason: str) -> None:
+        """
+        发送黑名单拦截响应
+
+        Args:
+            writer: 流写入器
+            message: 拦截消息
+            reason: 拦截原因
+        """
+        try:
+            blocked_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Access Blocked</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 50px;
+            background-color: #1a1a2e;
+            color: #eee;
+        }}
+        .blocked-container {{
+            background: #16213e;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            max-width: 600px;
+            margin: 0 auto;
+            border: 1px solid #e94560;
+        }}
+        h1 {{
+            color: #e94560;
+            margin-bottom: 20px;
+        }}
+        p {{
+            color: #aaa;
+            margin-bottom: 15px;
+        }}
+        .reason {{
+            background: #0f3460;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            color: #e94560;
+            font-family: monospace;
+        }}
+        .powered-by {{
+            color: #666;
+            font-size: 12px;
+            margin-top: 30px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="blocked-container">
+        <h1>🚫 Access Blocked</h1>
+        <p>Your request has been blocked by the proxy server.</p>
+        <div class="reason">{reason}</div>
+        <p>{message}</p>
+        <div class="powered-by">
+            Powered by SilkRoad-Next/2.0
+        </div>
+    </div>
+</body>
+</html>"""
+
+            content = blocked_html.encode('utf-8')
+
+            response = f"HTTP/1.1 403 Forbidden\r\n"
+            response += "Content-Type: text/html; charset=utf-8\r\n"
+            response += f"Content-Length: {len(content)}\r\n"
+            response += "Connection: close\r\n"
+            response += "Via: SilkRoad-Next/2.0\r\n"
+            response += "\r\n"
+
+            writer.write(response.encode('utf-8'))
+            writer.write(content)
+            await writer.drain()
+
+        except Exception as e:
+            self.logger.error(f"发送拦截响应失败: {e}")
+
+    async def _send_cached_response(self, writer: asyncio.StreamWriter,
+                                     cached_data: bytes,
+                                     session_id: Optional[str]) -> None:
+        """
+        发送缓存响应
+
+        Args:
+            writer: 流写入器
+            cached_data: 缓存数据（bytes）
+            session_id: 会话ID
+        """
+        try:
+            headers = {
+                'Content-Type': 'text/html; charset=utf-8',
+                'Content-Length': str(len(cached_data)),
+                'X-Cache': 'HIT',
+                'Via': 'SilkRoad-Next/2.0'
+            }
+
+            if session_id and self.session_manager:
+                session_cookie = f"session={session_id}; Path=/; HttpOnly"
+                headers['Set-Cookie'] = session_cookie
+
+            status_line = "HTTP/1.1 200 OK\r\n"
+            writer.write(status_line.encode('utf-8'))
+
+            for key, value in headers.items():
+                writer.write(f"{key}: {value}\r\n".encode('utf-8'))
+
+            writer.write(b"\r\n")
+            writer.write(cached_data)
+            await writer.drain()
+
+            self.logger.debug(f"缓存响应已发送: 200 {len(cached_data)} bytes")
+
+        except Exception as e:
+            self.logger.error(f"发送缓存响应失败: {e}")
             raise
 
     async def _stream_response(self, writer: asyncio.StreamWriter,
@@ -1072,7 +1473,7 @@ class ProxyServer:
         Returns:
             包含服务器状态信息的字典
         """
-        return {
+        stats = {
             'host': self.host,
             'port': self.port,
             'is_running': self.is_running,
@@ -1080,5 +1481,23 @@ class ProxyServer:
             'max_connections': self.config.get('server.proxy.maxConnections', 2000),
             'timeout': self.timeout,
             'request_timeout': self.request_timeout,
-            'max_redirects': self.max_redirects
+            'max_redirects': self.max_redirects,
+            'v2_enabled': self.v2_enabled
         }
+
+        # 添加 V2 模块统计信息
+        if self.v2_enabled:
+            if self.connection_pool:
+                stats['connection_pool'] = self.connection_pool.get_stats()
+            if self.thread_pool:
+                stats['thread_pool'] = self.thread_pool.get_stats()
+            if self.session_manager:
+                stats['session_manager'] = self.session_manager.get_stats()
+            if self.cache_manager:
+                stats['cache_manager'] = self.cache_manager.get_stats()
+            if self.blacklist_manager:
+                stats['blacklist_manager'] = self.blacklist_manager.get_stats()
+            if self.script_injector:
+                stats['script_injector'] = self.script_injector.get_stats()
+
+        return stats
