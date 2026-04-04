@@ -4,7 +4,7 @@ Location响应头处理器
 """
 import re
 from typing import Dict, Any
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 
 
 class LocationHandler:
@@ -49,29 +49,37 @@ class LocationHandler:
         Returns:
             重写后的Location URL
         """
-        # 1. 去除首尾空白
         location = location.strip()
 
-        # 2. 检查空URL
         if self.empty_url_pattern.match(location):
             return location
 
-        # 3. 跳过特殊协议
         if self.special_protocols.match(location):
             return location
 
-        # 4. 补全相对URL
         if not location.startswith(('http://', 'https://')):
-            # 处理协议相对URL (//example.com/path)
-            if location.startswith('//'):
-                # 使用基础URL的协议
-                parsed_base = urlparse(base_url)
-                location = f"{parsed_base.scheme}:{location}"
-            else:
-                # 相对路径，使用urljoin补全
-                location = urljoin(base_url, location)
+            parsed_base = urlparse(base_url)
+            scheme = parsed_base.scheme
+            netloc = parsed_base.netloc
+            base_path = parsed_base.path
 
-        # 5. 转换为代理URL格式
+            if location.startswith('//'):
+                location = f"{scheme}:{location}"
+            elif location.startswith('/'):
+                location = f"{scheme}://{netloc}{location}"
+            else:
+                if base_path and not base_path.endswith('/'):
+                    base_path = base_path.rsplit('/', 1)[0] + '/'
+                if not base_path:
+                    base_path = '/'
+                while location.startswith('./'):
+                    location = location[2:]
+                while location.startswith('../'):
+                    if base_path != '/':
+                        base_path = base_path.rsplit('/', 2)[0] + '/'
+                    location = location[3:]
+                location = f"{scheme}://{netloc}{base_path}{location}"
+
         return self._to_proxy_url(location)
 
     def _to_proxy_url(self, target_url: str) -> str:

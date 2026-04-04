@@ -5,7 +5,7 @@ URL处理入口模块
 import re
 import chardet
 from typing import Optional, Dict, Any
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 
 from .html import HTMLHandler
 from .css import CSSHandler

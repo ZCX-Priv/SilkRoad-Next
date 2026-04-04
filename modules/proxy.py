@@ -344,9 +344,10 @@ class ProxyServer:
         """
         解析目标 URL
 
-        支持两种格式：
+        支持三种格式：
         1. 绝对路径（标准代理格式）：http://example.com/path
-        2. 相对路径（反向代理格式）：/example.com/path
+        2. 相对路径带域名（反向代理格式）：/example.com/path
+        3. 相对路径无域名：/path（需要从 Referer 头提取域名）
 
         Args:
             path: 请求路径
@@ -355,31 +356,140 @@ class ProxyServer:
         Returns:
             完整的目标 URL，如果解析失败则返回 None
         """
-        # 1. 处理绝对路径（标准代理格式）
         if path.startswith('http://') or path.startswith('https://'):
             return path
 
-        # 2. 处理相对路径（反向代理格式）
-        # 路径格式: /target.com/path 或 /target.com:port/path
         path = path.lstrip('/')
 
         if not path:
             return None
 
-        # 分割目标主机和路径
         parts = path.split('/', 1)
-        target_host = parts[0]
+        first_segment = parts[0]
         target_path = '/' + parts[1] if len(parts) > 1 else '/'
 
-        # 补全协议（默认使用 HTTPS）
+        if self._is_valid_host(first_segment):
+            target_host = first_segment
+        else:
+            referer = headers.get('Referer', '')
+            referer_domain = self._extract_domain_from_referer(referer)
+
+            if referer_domain:
+                target_host = referer_domain
+                target_path = '/' + path
+            else:
+                return None
+
         if not target_host.startswith('http://') and not target_host.startswith('https://'):
-            # 检查是否显式指定了 HTTP 端口
             if ':80' in target_host:
                 target_host = 'http://' + target_host
             else:
                 target_host = 'https://' + target_host
 
         return f"{target_host}{target_path}"
+
+    def _is_valid_host(self, segment: str) -> bool:
+        """
+        判断字符串是否是有效的主机名
+
+        有效主机名：
+        - 包含至少一个点，且不以点开头（如 www.apple.com）
+        - IPv6 地址（以 [ 开头）
+        - 包含端口号（如 example.com:8080）
+
+        Args:
+            segment: 路径的第一段
+
+        Returns:
+            是否是有效的主机名
+        """
+        if not segment:
+            return False
+
+        if segment.startswith('['):
+            return True
+
+        if segment.startswith('.'):
+            return False
+
+        if ':' in segment:
+            host_part = segment.rsplit(':', 1)[0]
+            return '.' in host_part
+
+        if '.' not in segment:
+            return False
+
+        file_extensions = {
+            'js', 'css', 'html', 'htm', 'xml', 'json', 'txt', 'md',
+            'png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp', 'bmp',
+            'mp4', 'mp3', 'avi', 'mov', 'wmv', 'flv', 'wav', 'ogg',
+            'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+            'zip', 'rar', 'tar', 'gz', 'bz2', '7z',
+            'woff', 'woff2', 'ttf', 'eot', 'otf',
+            'php', 'asp', 'aspx', 'jsp', 'cgi', 'pl', 'py', 'rb',
+            'map', 'manifest', 'appcache', 'webmanifest'
+        }
+
+        parts = segment.split('.')
+        if len(parts) >= 2:
+            last_part = parts[-1].lower()
+            if last_part in file_extensions:
+                return False
+
+        tlds = {
+            'com', 'org', 'net', 'edu', 'gov', 'mil', 'io', 'co', 'ai', 'dev',
+            'app', 'tech', 'info', 'biz', 'me', 'tv', 'cc', 'cn', 'jp', 'uk',
+            'de', 'fr', 'ru', 'br', 'in', 'au', 'ca', 'nl', 'es', 'it', 'ch',
+            'se', 'no', 'dk', 'pl', 'be', 'at', 'eu', 'us', 'mx', 'tw', 'hk',
+            'sg', 'kr', 'my', 'id', 'th', 'vn', 'ph', 'nz', 'za', 'ar', 'cl',
+            'pe', 've', 'ec', 'pt', 'gr', 'tr', 'ro', 'hu', 'cz', 'sk', 'ua',
+            'by', 'kz', 'ir', 'sa', 'ae', 'eg', 'ng', 'ke'
+        }
+
+        if len(parts) >= 2:
+            potential_tld = parts[-1].lower()
+            if potential_tld in tlds:
+                return True
+            if potential_tld.isdigit():
+                return True
+            if len(potential_tld) == 2:
+                return True
+
+        return False
+
+    def _extract_domain_from_referer(self, referer: str) -> Optional[str]:
+        """
+        从 Referer 头中提取域名
+
+        Referer 格式: http://localhost:8080/www.apple.com/path
+        提取: www.apple.com
+
+        Args:
+            referer: Referer 头的值
+
+        Returns:
+            域名字符串，如果提取失败则返回 None
+        """
+        if not referer:
+            return None
+
+        try:
+            parsed = urlparse(referer)
+            referer_path = parsed.path.lstrip('/')
+
+            if not referer_path:
+                return None
+
+            parts = referer_path.split('/', 1)
+            first_segment = parts[0]
+
+            if '.' in first_segment or first_segment.startswith('['):
+                return first_segment
+
+            return None
+
+        except Exception:
+            return None
 
     def _build_forward_headers(self, original_headers: Dict[str, str],
                                 target_url: str) -> Dict[str, str]:
