@@ -127,9 +127,13 @@ class ProxyServer:
                 self.logger.error(f"端口 {self.port} 已被占用")
             else:
                 self.logger.error(f"启动代理服务器失败: {e}")
+            if self.session:
+                await self.session.close()
             raise
         except Exception as e:
             self.logger.error(f"启动代理服务器失败: {e}")
+            if self.session:
+                await self.session.close()
             raise
 
     async def stop(self) -> None:
