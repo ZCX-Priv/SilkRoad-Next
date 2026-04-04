@@ -1,0 +1,93 @@
+# SilkRoad-Next 项目文档整理
+## 一、项目目录结构与版本规划
+```
+SilkRoad-Next/
+├── databases/
+│   ├── ua.json
+│   ├── config.json
+│   ├── blacklist.json  ┐
+│   └── scripts.json    ┘ 适配V2版本
+├── modules/
+│   ├── __init__.py
+│   ├── cfg.py
+│   ├── ua.py
+│   ├── proxy.py
+│   ├── pageserver.py
+│   ├── logging.py
+│   ├── command.py
+│   ├── exit.py
+│   ├── url/                     ┐
+│   │   ├── handle.py            │
+│   │   ├── html.py              │
+│   │   ├── css.py               │ MVP(V1)
+│   │   ├── js.py                │
+│   │   ├── xml.py               │
+│   │   ├── json.py              │
+│   │   └── location.py          ┘
+│   ├── connectionpool.py
+│   ├── threadpool.py
+│   ├── sessions.py
+│   ├── blacklist.py
+│   ├── scripts.py               ┐
+│   │                              │ 适配V2版本
+│   ├── cachemanager.py          ┘
+│   ├── stream/
+│   │   ├── handle.py
+│   │   ├── media.py             ┐
+│   │   ├── sse.py               │ 适配V3版本
+│   │   └── others.py            ┘
+│   ├── controler.py
+│   ├── websockets.py            ┐
+│   │                              │ 适配V4版本
+│   └── wafpasser.py             ┘ 适配V5版本
+├── pages —— MVP(V1)
+├── Scripts —— V2
+│   ├── dock.js
+│   ├── target.js
+│   ├── progress.js
+│   └── zoom.js
+├── logs —— MVP(V1)
+│   └── 年-月-日.log
+├── SilkRoad.py
+├── requirements.txt
+├── MIT License
+└── Readme.md
+```
+### 项目简介
+一款强大的反向代理软件，旨在突破网络限制、保护隐私安全与提升连接速度。
+
+---
+
+## 二、项目开发细节规范
+### 1. 开发基础规范
+- 开发环境使用虚拟环境 venv
+
+### 2. 日志模块设计
+- 基于 loguru 实现日志记录与打印，日志文件统一存放至`logs`文件夹
+- 日志文件按天生成，命名规则为`年-月-日.log`，示例：`2026-4-17.log`
+- 支持日志文件自动定期清理，清理周期可在`config.json`中自定义，可选配置：7天/30天/6个月/1年/关闭（自动清理）
+
+### 3. 链接修正核心功能
+- 基于代码结构解析+多正则组合，实现url精准匹配
+- 自动根据网址/Referer/Origin补全相对链接，配套专属算法，确保多次跳转后仍可正确补全
+- 所有正则表达式均做预编译处理
+- 兼容处理，防止网站出现乱码
+- 完整处理链路：响应内容解压缩 → 补全相对url → 修正所有url → 7zip压缩内容
+
+### 4. 内置控制命令
+访问`/command`路径可查看全量命令，支持的子命令如下：
+- `/command/start` → 启动服务
+- `/command/pause` → 暂停服务
+- `/command/exit` → 退出程序
+- `/command/status` → 查看服务状态信息
+- `/command/clear` → 清除本地&客户端缓存
+
+### 5. 其他核心能力
+- 统一异步请求模式，实现内容接收与发送并行处理
+- 限定站点压缩方式统一为7zip
+- URL自动去重，示例：
+  1. 原地址：`http://127.0.0.1:8080/127.0.0.1:8080/www.baidu.com?s=...`
+     修正后：`http://127.0.0.1:8080/www.baidu.com?s=...`
+  2. 原地址：`http://127.0.0.1:8080/www.baidu.com/www.baidu.com?s=...`
+     修正后：`http://127.0.0.1:8080/www.baidu.com?s=...`
+- URL自动校正，无https协议头的地址自动补全https
