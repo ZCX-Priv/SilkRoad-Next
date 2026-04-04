@@ -199,13 +199,14 @@ class URLHandler:
         # 3. 使用chardet自动检测
         try:
             detected = chardet.detect(content)
-            confidence = detected.get('confidence', 0)
+            if detected is not None:
+                confidence = detected.get('confidence', 0)
 
-            # 只有在置信度较高时才使用检测结果
-            if confidence > 0.9:
-                encoding = detected.get('encoding', 'utf-8')
-                if encoding:
-                    return encoding.lower()
+                # 只有在置信度较高时才使用检测结果
+                if confidence > 0.9:
+                    encoding = detected.get('encoding', 'utf-8')
+                    if encoding:
+                        return encoding.lower()
         except Exception as e:
             self.logger.debug(f"chardet检测失败: {e}")
 

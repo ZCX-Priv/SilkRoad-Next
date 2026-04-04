@@ -11,7 +11,7 @@ Author: SilkRoad-Next Team
 
 import signal
 import asyncio
-from typing import Set, Optional
+from typing import Set, Optional, Dict, Any
 import atexit
 import sys
 
@@ -61,12 +61,9 @@ class GracefulExit:
         signal.signal(signal.SIGTERM, cls._signal_handler)
 
         # Windows 不支持 SIGQUIT，需要捕获 AttributeError
-        try:
-            signal.signal(signal.SIGQUIT, cls._signal_handler)
-        except AttributeError:
-            # Windows 系统不支持 SIGQUIT 信号
-            if cls.logger:
-                cls.logger.debug("当前系统不支持 SIGQUIT 信号（Windows 平台）")
+        sigquit = getattr(signal, 'SIGQUIT', None)
+        if sigquit is not None:
+            signal.signal(sigquit, cls._signal_handler)
 
         # 注册退出清理函数
         # atexit 会在 Python 解释器退出时自动调用
@@ -87,16 +84,15 @@ class GracefulExit:
             frame: 当前栈帧（未使用）
         """
         # 信号编号到信号名称的映射
-        signal_names = {
+        signal_names: Dict[int, str] = {
             signal.SIGINT: 'SIGINT (Ctrl+C)',
             signal.SIGTERM: 'SIGTERM (终止信号)',
         }
 
         # 尝试添加 SIGQUIT（如果系统支持）
-        try:
-            signal_names[signal.SIGQUIT] = 'SIGQUIT (退出信号)'
-        except AttributeError:
-            pass
+        sigquit = getattr(signal, 'SIGQUIT', None)
+        if sigquit is not None:
+            signal_names[sigquit] = 'SIGQUIT (退出信号)'
 
         # 获取信号名称
         signal_name = signal_names.get(signum, f'信号 {signum}')

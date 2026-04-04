@@ -433,11 +433,12 @@ class CommandHandler:
         Returns:
             str: 格式化的大小字符串
         """
+        size_float = float(size)
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if size < 1024.0:
-                return f"{size:.2f} {unit}"
-            size /= 1024.0
-        return f"{size:.2f} PB"
+            if size_float < 1024.0:
+                return f"{size_float:.2f} {unit}"
+            size_float /= 1024.0
+        return f"{size_float:.2f} PB"
 
     def _get_num_fds(self, process: psutil.Process) -> int:
         """

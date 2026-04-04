@@ -21,6 +21,7 @@ import aiohttp
 
 from modules.url.handle import URLHandler
 from modules.ua import UAHandler
+from modules.pageserver import PageServer
 
 if TYPE_CHECKING:
     from modules.command import CommandHandler
@@ -67,6 +68,7 @@ class ProxyServer:
 
         self.url_handler = URLHandler(config, logger)
         self.ua_handler = UAHandler()
+        self.page_server = PageServer(config, logger)
         self.command_handler: Optional['CommandHandler'] = None
 
         self.active_connections = 0
@@ -235,6 +237,13 @@ class ProxyServer:
             else:
                 await self._send_error(writer, 404, "Command Interface Disabled")
                 return
+
+        # 检查是否为静态页面请求
+        static_result = await self.page_server.handle_request(path)
+        if static_result:
+            content, mime_type = static_result
+            await self._send_static_response(writer, content, mime_type)
+            return
 
         try:
             headers = await self._parse_headers(reader)
@@ -552,6 +561,7 @@ class ProxyServer:
             headers: 请求头
             body: 请求体
         """
+        assert self.session is not None
         current_url = target_url
         redirect_count = 0
 
@@ -905,6 +915,7 @@ class ProxyServer:
             path: 请求路径
             method: HTTP 方法
         """
+        assert self.command_handler is not None
         try:
             status_code, response_data = await self.command_handler.handle_request(path, method)
 
@@ -935,6 +946,37 @@ class ProxyServer:
         except Exception as e:
             self.logger.error(f"处理命令请求失败: {e}")
             await self._send_error(writer, 500, "Internal Server Error")
+
+    async def _send_static_response(self, writer: asyncio.StreamWriter,
+                                     content: bytes, mime_type: str) -> None:
+        """
+        发送静态文件响应
+
+        Args:
+            writer: 流写入器
+            content: 文件内容
+            mime_type: MIME类型
+        """
+        try:
+            # 构建响应
+            response = f"HTTP/1.1 200 OK\r\n"
+            response += f"Content-Type: {mime_type}\r\n"
+            response += f"Content-Length: {len(content)}\r\n"
+            response += "Connection: keep-alive\r\n"
+            response += "Via: SilkRoad-Next/1.0\r\n"
+            response += "\r\n"
+
+            # 发送响应头
+            writer.write(response.encode('utf-8'))
+            # 发送响应体
+            writer.write(content)
+            await writer.drain()
+
+            self.logger.debug(f"静态文件响应已发送: {mime_type}, {len(content)} bytes")
+
+        except Exception as e:
+            self.logger.error(f"发送静态文件响应失败: {e}")
+            raise
 
     async def _send_error(self, writer: asyncio.StreamWriter,
                           status_code: int, message: str) -> None:
