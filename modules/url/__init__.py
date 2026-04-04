@@ -10,6 +10,7 @@ from .js import JSHandler
 from .xml import XMLHandler
 from .json import JSONHandler
 from .location import LocationHandler
+from .cookie import CookieHandler
 
 __all__ = [
     'URLHandler',
@@ -19,4 +20,5 @@ __all__ = [
     'XMLHandler',
     'JSONHandler',
     'LocationHandler',
+    'CookieHandler',
 ]

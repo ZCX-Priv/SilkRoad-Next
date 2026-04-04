@@ -20,6 +20,7 @@ from urllib.parse import urlparse, urljoin
 import aiohttp
 
 from modules.url.handle import URLHandler
+from modules.url.cookie import CookieHandler
 from modules.ua import UAHandler
 from modules.pageserver import PageServer
 
@@ -68,6 +69,7 @@ class ProxyServer:
 
         self.url_handler = URLHandler(config, logger)
         self.ua_handler = UAHandler()
+        self.cookie_handler = CookieHandler()
         self.page_server = PageServer(config, logger)
         self.command_handler: Optional['CommandHandler'] = None
 
@@ -520,30 +522,35 @@ class ProxyServer:
         """
         forward_headers = {}
 
-        # 需要过滤的请求头
         skip_headers = {
             'Host', 'Connection', 'Keep-Alive', 'Proxy-Connection',
             'Proxy-Authorization', 'TE', 'Transfer-Encoding', 'Upgrade'
         }
 
-        # 复制原始请求头
-        for key, value in original_headers.items():
-            if key not in skip_headers:
-                forward_headers[key] = value
+        target_domain = self.cookie_handler.extract_domain_from_url(target_url)
 
-        # 设置新的请求头
+        for key, value in original_headers.items():
+            if key in skip_headers:
+                continue
+            
+            if key.lower() == 'cookie' and target_domain:
+                filtered_cookie = self.cookie_handler.filter_request_cookies(
+                    value, target_domain
+                )
+                if filtered_cookie:
+                    forward_headers[key] = filtered_cookie
+                continue
+            
+            forward_headers[key] = value
+
         parsed = urlparse(target_url)
 
-        # 设置 Host
         forward_headers['Host'] = parsed.netloc
 
-        # 设置 Connection
         forward_headers['Connection'] = 'keep-alive'
 
-        # 设置 Accept-Encoding（仅支持 gzip 和 deflate）
         forward_headers['Accept-Encoding'] = 'gzip, deflate'
 
-        # UA 随机化
         if 'User-Agent' not in forward_headers:
             forward_headers['User-Agent'] = self.ua_handler.get_random_ua()
 
@@ -673,25 +680,19 @@ class ProxyServer:
             target_url: 目标 URL
         """
         try:
-            # 获取内容长度
             content_length = int(response.headers.get('Content-Length', 0))
 
-            # 判断是否需要流式传输
             if content_length > self.stream_threshold:
-                # 大文件流式传输，不进行 URL 修正
                 await self._stream_response(writer, response)
                 return
 
-            # 读取响应体
             content = await response.read()
 
-            # 解压缩
             content = await self._decompress_content(
                 content,
                 response.headers.get('Content-Encoding')
             )
 
-            # URL 修正
             content_type = response.headers.get('Content-Type', '')
             if self._should_rewrite(content_type):
                 try:
@@ -702,43 +703,51 @@ class ProxyServer:
                     )
                 except Exception as e:
                     self.logger.error(f"URL 修正失败: {e}")
-                    # 失败时使用原始内容
 
-            # 重新压缩
             content, encoding = await self._compress_content(content)
 
-            # 构建响应头
             headers = dict(response.headers)
 
-            # 更新必要的响应头
             headers['Content-Length'] = str(len(content))
             if encoding and encoding != 'identity':
                 headers['Content-Encoding'] = encoding
             else:
-                # 移除 Content-Encoding 头
                 headers.pop('Content-Encoding', None)
 
-            # 添加 Via 头
             headers['Via'] = 'SilkRoad-Next/1.0'
 
             headers.pop('Transfer-Encoding', None)
             headers.pop('Content-Security-Policy', None)
             headers.pop('Content-Security-Policy-Report-Only', None)
 
+            target_domain = self.cookie_handler.extract_domain_from_url(target_url)
+
+            set_cookie_values = None
+            if 'Set-Cookie' in headers:
+                set_cookie_values = headers.pop('Set-Cookie')
+            elif 'set-cookie' in headers:
+                set_cookie_values = headers.pop('set-cookie')
+
             status_line = f"HTTP/1.1 {response.status} {response.reason}\r\n"
             writer.write(status_line.encode('utf-8'))
 
-            # 发送响应头
             for key, value in headers.items():
-                # 跳过某些响应头
-                if key.lower() in ['transfer-encoding']:
+                if key.lower() in ['transfer-encoding', 'set-cookie']:
                     continue
                 writer.write(f"{key}: {value}\r\n".encode('utf-8'))
 
-            # 空行
+            if set_cookie_values and target_domain:
+                if isinstance(set_cookie_values, str):
+                    set_cookie_values = [set_cookie_values]
+                
+                for cookie_value in set_cookie_values:
+                    rewritten_cookie = self.cookie_handler.rewrite_set_cookie(
+                        cookie_value, target_domain
+                    )
+                    writer.write(f"Set-Cookie: {rewritten_cookie}\r\n".encode('utf-8'))
+
             writer.write(b"\r\n")
 
-            # 发送响应体
             writer.write(content)
             await writer.drain()
 
@@ -760,24 +769,19 @@ class ProxyServer:
             response: 目标服务器的响应对象
         """
         try:
-            # 发送状态行
             status_line = f"HTTP/1.1 {response.status} {response.reason}\r\n"
             writer.write(status_line.encode('utf-8'))
 
-            # 发送响应头
             for key, value in response.headers.items():
-                if key.lower() in ['transfer-encoding', 'content-security-policy', 'content-security-policy-report-only']:
+                if key.lower() in ['transfer-encoding', 'content-security-policy', 'content-security-policy-report-only', 'set-cookie']:
                     continue
                 writer.write(f"{key}: {value}\r\n".encode('utf-8'))
 
-            # 添加 Via 头
             writer.write(b"Via: SilkRoad-Next/1.0\r\n")
 
-            # 空行
             writer.write(b"\r\n")
 
-            # 流式传输响应体
-            chunk_size = 8192  # 8KB chunks
+            chunk_size = 8192
             total_bytes = 0
 
             async for chunk in response.content.iter_chunked(chunk_size):
