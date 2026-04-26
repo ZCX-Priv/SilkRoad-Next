@@ -57,40 +57,127 @@ class SilkRoad:
         # 关闭事件，用于优雅退出
         self.shutdown_event = asyncio.Event()
 
+        # ========== V2 新增组件 ==========
+        # 连接池（用于复用与目标服务器的长连接）
+        self.connection_pool = None
+
+        # 线程池（用于处理 CPU 密集型任务）
+        self.thread_pool = None
+
+        # 会话管理器（用于管理客户端会话状态）
+        self.session_manager = None
+
+        # 缓存管理器（用于优化资源加载速度）
+        self.cache_manager = None
+
+        # 黑名单管理器（用于访问控制）
+        self.blacklist_manager = None
+
+        # 脚本注入器（用于注入自定义 JS 脚本）
+        self.script_injector = None
+
     async def initialize(self) -> None:
         """
-        初始化所有模块
+        初始化所有模块（V1 + V2）
 
         按照依赖顺序初始化所有核心模块：
         1. 加载配置文件
         2. 初始化日志系统
-        3. 创建代理服务器
-        4. 创建命令处理器
-        5. 设置优雅退出
+        3. 初始化连接池（V2）
+        4. 初始化线程池（V2）
+        5. 初始化会话管理器（V2）
+        6. 初始化缓存管理器（V2）
+        7. 初始化黑名单管理器（V2）
+        8. 初始化脚本注入器（V2）
+        9. 创建代理服务器
+        10. 创建命令处理器
+        11. 设置优雅退出
 
         Raises:
             ConfigError: 配置加载失败
             Exception: 其他初始化错误
         """
         try:
-            # ========== 1. 加载配置 ==========
+            # ========== V1 初始化 ==========
             print("=" * 60)
-            print("  SilkRoad-Next v1.0.0 - 高性能反向代理服务器")
+            print("  SilkRoad-Next v2.0.0 - 高性能反向代理服务器")
             print("=" * 60)
             print()
-            print("[1/5] 加载配置文件...")
 
+            # 1. 加载配置
+            print("[1/11] 加载配置文件...")
             await self.config.load()
 
-            # ========== 2. 初始化日志系统 ==========
-            print("[2/5] 初始化日志系统...")
-
+            # 2. 初始化日志系统
+            print("[2/11] 初始化日志系统...")
             self.logger = Logger(self.config)
             self.logger.info("配置加载完成")
 
-            # ========== 3. 创建代理服务器 ==========
-            print("[3/5] 创建代理服务器...")
+            # ========== V2 初始化 ==========
+            # 3. 初始化连接池
+            print("[3/11] 初始化连接池...")
+            if self.config.get('performance.connectionPool.enabled', False):
+                from modules.connectionpool import ConnectionPool
+                self.connection_pool = ConnectionPool(
+                    max_connections_per_host=self.config.get('performance.connectionPool.maxPoolSize', 100),
+                    connection_timeout=self.config.get('server.proxy.connectionTimeout', 30),
+                    keep_alive_timeout=self.config.get('performance.connectionPool.keepaliveTimeout', 30)
+                )
+                self.logger.info("连接池已启用")
 
+            # 4. 初始化线程池
+            print("[4/11] 初始化线程池...")
+            if self.config.get('performance.threadPool.enabled', False):
+                from modules.threadpool import ThreadPoolManager
+                self.thread_pool = ThreadPoolManager(
+                    max_workers=self.config.get('performance.threadPool.maxWorkers', 4)
+                )
+                self.logger.info("线程池已启用")
+
+            # 5. 初始化会话管理器
+            print("[5/11] 初始化会话管理器...")
+            if self.config.get('v2.session.enabled', False):
+                from modules.sessions import SessionManager
+                self.session_manager = SessionManager(
+                    session_timeout=self.config.get('v2.session.timeout', 1800),
+                    cleanup_interval=self.config.get('v2.session.cleanupInterval', 60)
+                )
+                asyncio.create_task(self.session_manager.start_cleanup_task())
+                self.logger.info("会话管理器已启用")
+
+            # 6. 初始化缓存管理器
+            print("[6/11] 初始化缓存管理器...")
+            if self.config.get('cache.enabled', False):
+                from modules.cachemanager import CacheManager
+                self.cache_manager = CacheManager(
+                    max_memory_cache_size=self.config.get('cache.maxSize', 1073741824),
+                    default_ttl=self.config.get('cache.defaultTTL', 3600)
+                )
+                asyncio.create_task(self._cache_cleanup_task())
+                self.logger.info("缓存管理器已启用")
+
+            # 7. 初始化黑名单管理器
+            print("[7/11] 初始化黑名单管理器...")
+            if self.config.get('v2.blacklist.enabled', False):
+                from modules.blacklist import BlacklistManager
+                self.blacklist_manager = BlacklistManager(
+                    config_file=self.config.get('v2.blacklist.configFile', 'databases/blacklist.json')
+                )
+                self.logger.info("黑名单管理器已启用")
+
+            # 8. 初始化脚本注入器
+            print("[8/11] 初始化脚本注入器...")
+            if self.config.get('v2.scripts.enabled', False):
+                from modules.scripts import ScriptInjector
+                self.script_injector = ScriptInjector(
+                    config_file=self.config.get('v2.scripts.configFile', 'databases/scripts.json')
+                )
+                # 加载脚本配置
+                await self.script_injector.load_config()
+                self.logger.info("脚本注入器已启用")
+
+            # ========== 创建代理服务器 ==========
+            print("[9/11] 创建代理服务器...")
             proxy_host = self.config.get('server.proxy.host', '0.0.0.0')
             proxy_port = self.config.get('server.proxy.port', 8080)
 
@@ -101,22 +188,28 @@ class SilkRoad:
                 logger=self.logger
             )
 
+            # 注入 V2 模块到代理服务器
+            self.proxy_server.connection_pool = self.connection_pool
+            self.proxy_server.thread_pool = self.thread_pool
+            self.proxy_server.session_manager = self.session_manager
+            self.proxy_server.cache_manager = self.cache_manager
+            self.proxy_server.blacklist_manager = self.blacklist_manager
+            self.proxy_server.script_injector = self.script_injector
+
             self.logger.info(f"代理服务器配置: {proxy_host}:{proxy_port}")
 
-            print("[4/5] 创建命令处理器...")
-
+            # 10. 创建命令处理器
+            print("[10/11] 创建命令处理器...")
             self.command_handler = CommandHandler(
                 proxy_server=self.proxy_server,
                 config=self.config,
                 logger=self.logger
             )
-
             self.proxy_server.command_handler = self.command_handler
             self.logger.info("命令处理器已绑定到代理服务器")
 
-            # ========== 5. 设置优雅退出 ==========
-            print("[5/5] 设置优雅退出...")
-
+            # 11. 设置优雅退出
+            print("[11/11] 设置优雅退出...")
             GracefulExit.setup(self.shutdown_event, self.logger)
 
             # ========== 初始化完成 ==========
@@ -126,7 +219,7 @@ class SilkRoad:
             print("=" * 60)
             print()
 
-            self.logger.info("所有模块初始化完成")
+            self.logger.info("所有模块初始化完成（V1 + V2）")
 
         except ConfigError as e:
             print(f"[错误] 配置加载失败: {e}")
@@ -190,9 +283,13 @@ class SilkRoad:
         """
         等待关闭信号
 
-        阻塞等待关闭事件被触发，然后执行优雅关闭流程：
-        1. 停止代理服务器
-        2. 关闭日志系统
+        阻塞等待关闭事件被触发，然后执行优雅关闭流程（V1 + V2）：
+        1. 关闭连接池（V2）
+        2. 关闭线程池（V2）
+        3. 保存会话数据（V2）
+        4. 清理缓存（V2）
+        5. 停止代理服务器（V1）
+        6. 关闭日志系统（V1）
         """
         await self.shutdown_event.wait()
 
@@ -204,11 +301,35 @@ class SilkRoad:
         self.logger.info("=" * 60)
 
         try:
+            # ========== 关闭 V2 模块 ==========
+            # 1. 关闭连接池
+            if self.connection_pool:
+                self.logger.info("[1/6] 关闭连接池...")
+                await self.connection_pool.close_all()
+
+            # 2. 关闭线程池
+            if self.thread_pool:
+                self.logger.info("[2/6] 关闭线程池...")
+                self.thread_pool.shutdown()
+
+            # 3. 保存会话数据
+            if self.session_manager:
+                self.logger.info("[3/6] 保存会话数据...")
+                await self.session_manager.save_to_file('sessions_backup.json')
+
+            # 4. 清理缓存
+            if self.cache_manager:
+                self.logger.info("[4/6] 清理缓存...")
+                await self.cache_manager.clear_all()
+
+            # ========== 关闭 V1 模块 ==========
+            # 5. 停止代理服务器
             if self.proxy_server:
-                self.logger.info("[1/2] 停止代理服务器...")
+                self.logger.info("[5/6] 停止代理服务器...")
                 await self.proxy_server.stop()
 
-            self.logger.info("[2/2] 关闭日志系统...")
+            # 6. 关闭日志系统
+            self.logger.info("[6/6] 关闭日志系统...")
             await self.logger.close()
 
             print()
@@ -222,6 +343,33 @@ class SilkRoad:
                 self.logger.error(f"关闭过程中发生错误: {e}")
             else:
                 print(f"[错误] 关闭过程中发生错误: {e}")
+
+    async def _cache_cleanup_task(self):
+        """
+        定期清理缓存任务
+
+        根据配置的清理间隔，定期清理过期的缓存项。
+        该任务在后台持续运行，直到程序关闭。
+        """
+        while True:
+            try:
+                # 等待清理间隔
+                cleanup_interval = self.config.get('cache.cleanupInterval', 300)
+                await asyncio.sleep(cleanup_interval)
+
+                # 执行缓存清理
+                if self.cache_manager:
+                    await self.cache_manager.cleanup_expired()
+                    if self.logger:
+                        self.logger.debug("缓存清理任务完成")
+
+            except asyncio.CancelledError:
+                # 任务被取消，正常退出
+                break
+            except Exception as e:
+                # 清理过程中发生错误，记录日志但继续运行
+                if self.logger:
+                    self.logger.error(f"缓存清理任务失败: {e}")
 
     def _display_startup_info(self) -> None:
         """
@@ -239,7 +387,7 @@ class SilkRoad:
         print()
         print("┌" + "─" * 58 + "┐")
         print("│" + " " * 58 + "│")
-        print("│" + "  SilkRoad-Next v1.0.0".ljust(58) + "│")
+        print("│" + "  SilkRoad-Next v2.0.0".ljust(58) + "│")
         print("│" + "  高性能反向代理服务器".ljust(58) + "│")
         print("│" + " " * 58 + "│")
         print("├" + "─" * 58 + "┤")

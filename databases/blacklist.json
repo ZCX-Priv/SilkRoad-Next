@@ -1,0 +1,34 @@
+{
+  "ip_blacklist": [
+    "192.168.1.100",
+    "10.0.0.50"
+  ],
+  "ip_range_blacklist": [
+    "192.168.2.0/24",
+    "10.1.0.0/16"
+  ],
+  "domain_blacklist": [
+    "malicious-site.com",
+    "spam-domain.net"
+  ],
+  "url_blacklist": [
+    "/admin/config",
+    "/private/data"
+  ],
+  "url_pattern_blacklist": [
+    "/admin/.*",
+    "/private/.*",
+    ".*\\.bak$",
+    ".*\\.backup$"
+  ],
+  "ip_whitelist": [
+    "127.0.0.1",
+    "::1"
+  ],
+  "ip_range_whitelist": [
+    "192.168.0.0/16"
+  ],
+  "domain_whitelist": [
+    "trusted-site.com"
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "scripts": {
+    "dock": {
+      "file": "dock.js",
+      "enabled": true,
+      "position": "body_end",
+      "priority": 100,
+      "conditions": {
+        "url_patterns": [
+          ".*"
+        ],
+        "content_types": [
+          "text/html"
+        ]
+      },
+      "description": "浮动面板脚本 - 在页面右下角显示控制面板"
+    },
+    "progress": {
+      "file": "progress.js",
+      "enabled": true,
+      "position": "head_end",
+      "priority": 90,
+      "conditions": {
+        "url_patterns": [
+          ".*"
+        ],
+        "content_types": [
+          "text/html"
+        ]
+      },
+      "description": "进度条脚本 - 显示页面加载进度"
+    },
+    "zoom": {
+      "file": "zoom.js",
+      "enabled": false,
+      "position": "body_end",
+      "priority": 80,
+      "conditions": {
+        "url_patterns": [
+          ".*\\.jpg",
+          ".*\\.png",
+          ".*\\.gif"
+        ],
+        "content_types": [
+          "text/html"
+        ]
+      },
+      "description": "图片缩放脚本 - 点击图片放大查看"
+    },
+    "target": {
+      "file": "target.js",
+      "enabled": true,
+      "position": "body_end",
+      "priority": 70,
+      "conditions": {
+        "url_patterns": [
+          ".*"
+        ],
+        "content_types": [
+          "text/html"
+        ]
+      },
+      "description": "目标定位脚本 - 高亮显示当前访问的目标"
+    }
+  }
+}
