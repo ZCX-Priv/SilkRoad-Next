@@ -103,6 +103,13 @@ class SilkRoad:
         # 其他流处理器（用于处理分块传输等）
         self.others_handler = None
 
+        # ========== V4 新增组件 ==========
+        # WebSocket 处理器（用于处理 WebSocket 协议）
+        self.websocket_handler = None
+
+        # 流量控制器（用于请求调度和带宽管理）
+        self.traffic_controller = None
+
     async def initialize(self) -> None:
         """
         初始化所有模块（V1 + V2 + V3）
@@ -117,9 +124,11 @@ class SilkRoad:
         7. 初始化黑名单管理器（V2）
         8. 初始化脚本注入器（V2）
         9. 初始化流处理器（V3）
-        10. 创建代理服务器
-        11. 创建命令处理器
-        12. 设置优雅退出
+        10. 初始化 WebSocket 处理器（V4）
+        11. 初始化流量控制器（V4）
+        12. 创建代理服务器
+        13. 创建命令处理器
+        14. 设置优雅退出
 
         Raises:
             ConfigError: 配置加载失败
@@ -128,22 +137,22 @@ class SilkRoad:
         try:
             # ========== V1 初始化 ==========
             print("=" * 60)
-            print("  SilkRoad-Next v3.0.0 - 高性能反向代理服务器")
+            print("  SilkRoad-Next v4.0.0 - 高性能反向代理服务器")
             print("=" * 60)
             print()
 
             # 1. 加载配置
-            print("[1/12] 加载配置文件...")
+            print("[1/14] 加载配置文件...")
             await self.config.load()
 
             # 2. 初始化日志系统
-            print("[2/12] 初始化日志系统...")
+            print("[2/14] 初始化日志系统...")
             self.logger = Logger(self.config)
             self.logger.info("配置加载完成")
 
             # ========== V2 初始化 ==========
             # 3. 初始化连接池
-            print("[3/12] 初始化连接池...")
+            print("[3/14] 初始化连接池...")
             if self.config.get('performance.connectionPool.enabled', False):
                 from modules.connectionpool import ConnectionPool
                 self.connection_pool = ConnectionPool(
@@ -154,7 +163,7 @@ class SilkRoad:
                 self.logger.info("连接池已启用")
 
             # 4. 初始化线程池
-            print("[4/12] 初始化线程池...")
+            print("[4/14] 初始化线程池...")
             if self.config.get('performance.threadPool.enabled', False):
                 from modules.threadpool import ThreadPoolManager
                 self.thread_pool = ThreadPoolManager(
@@ -163,7 +172,7 @@ class SilkRoad:
                 self.logger.info("线程池已启用")
 
             # 5. 初始化会话管理器
-            print("[5/12] 初始化会话管理器...")
+            print("[5/14] 初始化会话管理器...")
             if self.config.get('v2.session.enabled', False):
                 from modules.sessions import SessionManager
                 self.session_manager = SessionManager(
@@ -174,7 +183,7 @@ class SilkRoad:
                 self.logger.info("会话管理器已启用")
 
             # 6. 初始化缓存管理器
-            print("[6/12] 初始化缓存管理器...")
+            print("[6/14] 初始化缓存管理器...")
             if self.config.get('cache.enabled', False):
                 from modules.cachemanager import CacheManager
                 self.cache_manager = CacheManager(
@@ -185,7 +194,7 @@ class SilkRoad:
                 self.logger.info("缓存管理器已启用")
 
             # 7. 初始化黑名单管理器
-            print("[7/12] 初始化黑名单管理器...")
+            print("[7/14] 初始化黑名单管理器...")
             if self.config.get('v2.blacklist.enabled', False):
                 from modules.blacklist import BlacklistManager
                 self.blacklist_manager = BlacklistManager(
@@ -194,7 +203,7 @@ class SilkRoad:
                 self.logger.info("黑名单管理器已启用")
 
             # 8. 初始化脚本注入器
-            print("[8/12] 初始化脚本注入器...")
+            print("[8/14] 初始化脚本注入器...")
             if self.config.get('v2.scripts.enabled', False):
                 from modules.scripts import ScriptInjector
                 self.script_injector = ScriptInjector(
@@ -206,7 +215,7 @@ class SilkRoad:
 
             # ========== V3 初始化 ==========
             # 9. 初始化流处理器
-            print("[9/12] 初始化流处理器...")
+            print("[9/14] 初始化流处理器...")
             if self.config.get('stream.enabled', False):
                 from modules.stream.handle import StreamHandler
                 from modules.stream.media import MediaHandler
@@ -228,8 +237,27 @@ class SilkRoad:
 
                 self.logger.info("流处理器已启用")
 
+            # ========== V4 初始化 ==========
+            # 10. 初始化 WebSocket 处理器
+            print("[10/14] 初始化 WebSocket 处理器...")
+            if self.config.get('websocket.enabled', False):
+                from modules.websockets import WebSocketHandler
+                
+                self.websocket_handler = WebSocketHandler(self.config, self.logger.logger)
+                self.logger.info("WebSocket 处理器已启用")
+
+            # 11. 初始化流量控制器
+            print("[11/14] 初始化流量控制器...")
+            if self.config.get('trafficControl.enabled', False):
+                from modules.controler import TrafficController
+                
+                self.traffic_controller = TrafficController(self.config, self.logger.logger)
+                
+                asyncio.create_task(self.traffic_controller.start_scheduler())
+                self.logger.info("流量控制器已启用")
+
             # ========== 创建代理服务器 ==========
-            print("[10/12] 创建代理服务器...")
+            print("[12/14] 创建代理服务器...")
             proxy_host = self.config.get('server.proxy.host', '0.0.0.0')
             proxy_port = self.config.get('server.proxy.port', 8080)
 
@@ -254,10 +282,14 @@ class SilkRoad:
             self.proxy_server.sse_handler = self.sse_handler
             self.proxy_server.others_handler = self.others_handler
 
+            # 注入 V4 模块到代理服务器
+            self.proxy_server.websocket_handler = self.websocket_handler
+            self.proxy_server.traffic_controller = self.traffic_controller
+
             self.logger.info(f"代理服务器配置: {proxy_host}:{proxy_port}")
 
-            # 11. 创建命令处理器
-            print("[11/12] 创建命令处理器...")
+            # 13. 创建命令处理器
+            print("[13/14] 创建命令处理器...")
             self.command_handler = CommandHandler(
                 proxy_server=self.proxy_server,
                 config=self.config,
@@ -266,8 +298,8 @@ class SilkRoad:
             self.proxy_server.command_handler = self.command_handler
             self.logger.info("命令处理器已绑定到代理服务器")
 
-            # 12. 设置优雅退出
-            print("[12/12] 设置优雅退出...")
+            # 14. 设置优雅退出
+            print("[14/14] 设置优雅退出...")
             GracefulExit.setup(self.shutdown_event, self.logger)
 
             # ========== 初始化完成 ==========
@@ -277,7 +309,7 @@ class SilkRoad:
             print("=" * 60)
             print()
 
-            self.logger.info("所有模块初始化完成（V1 + V2 + V3）")
+            self.logger.info("所有模块初始化完成（V1 + V2 + V3 + V4）")
 
         except ConfigError as e:
             print(f"[错误] 配置加载失败: {e}")
@@ -300,6 +332,17 @@ class SilkRoad:
         2. 启动代理服务器
         3. 启动命令处理器
         4. 等待关闭信号
+
+        关闭流程（V1 + V2 + V3 + V4）：
+        1. 关闭 WebSocket 连接（V4）
+        2. 停止流量控制器（V4）
+        3. 关闭流处理器（V3）
+        4. 关闭连接池（V2）
+        5. 关闭线程池（V2）
+        6. 保存会话数据（V2）
+        7. 清理缓存（V2）
+        8. 停止代理服务器（V1）
+        9. 关闭日志系统（V1）
 
         Raises:
             Exception: 启动过程中的任何错误
@@ -360,45 +403,58 @@ class SilkRoad:
         self.logger.info("=" * 60)
 
         try:
+            # ========== 关闭 V4 模块 ==========
+            # 1. 关闭 WebSocket 连接
+            if self.websocket_handler:
+                self.logger.info("[1/9] 关闭 WebSocket 连接...")
+                connections = await self.websocket_handler.get_active_connections()
+                for conn in connections:
+                    await self.websocket_handler.close_connection(conn.connection_id)
+                self.logger.info(f"已关闭 {len(connections)} 个 WebSocket 连接")
+
+            # 2. 停止流量控制器
+            if self.traffic_controller:
+                self.logger.info("[2/9] 停止流量控制器...")
+                # 流量控制器无需特殊关闭
+
             # ========== 关闭 V3 模块 ==========
-            # 1. 关闭流处理器
+            # 3. 关闭流处理器
             if self.stream_handler:
-                self.logger.info("[1/7] 关闭流处理器...")
-                # 关闭所有活跃流
+                self.logger.info("[3/9] 关闭流处理器...")
                 active_streams = await self.stream_handler.get_active_streams()
                 for stream_id in active_streams:
                     await self.stream_handler.close_stream(stream_id)
                 self.logger.info(f"已关闭 {len(active_streams)} 个活跃流")
 
             # ========== 关闭 V2 模块 ==========
-            # 2. 关闭连接池
+            # 4. 关闭连接池
             if self.connection_pool:
-                self.logger.info("[2/7] 关闭连接池...")
+                self.logger.info("[4/9] 关闭连接池...")
                 await self.connection_pool.close_all()
 
-            # 3. 关闭线程池
+            # 5. 关闭线程池
             if self.thread_pool:
-                self.logger.info("[3/7] 关闭线程池...")
+                self.logger.info("[5/9] 关闭线程池...")
                 self.thread_pool.shutdown()
 
-            # 4. 保存会话数据
+            # 6. 保存会话数据
             if self.session_manager:
-                self.logger.info("[4/7] 保存会话数据...")
+                self.logger.info("[6/9] 保存会话数据...")
                 await self.session_manager.save_to_file('sessions_backup.json')
 
-            # 5. 清理缓存
+            # 7. 清理缓存
             if self.cache_manager:
-                self.logger.info("[5/7] 清理缓存...")
+                self.logger.info("[7/9] 清理缓存...")
                 await self.cache_manager.clear_all()
 
             # ========== 关闭 V1 模块 ==========
-            # 6. 停止代理服务器
+            # 8. 停止代理服务器
             if self.proxy_server:
-                self.logger.info("[6/7] 停止代理服务器...")
+                self.logger.info("[8/9] 停止代理服务器...")
                 await self.proxy_server.stop()
 
-            # 7. 关闭日志系统
-            self.logger.info("[7/7] 关闭日志系统...")
+            # 9. 关闭日志系统
+            self.logger.info("[9/9] 关闭日志系统...")
             await self.logger.close()
 
             print()
@@ -456,7 +512,7 @@ class SilkRoad:
         print()
         print("┌" + "─" * 58 + "┐")
         print("│" + " " * 58 + "│")
-        print("│" + "  SilkRoad-Next v3.0.0".ljust(58) + "│")
+        print("│" + "  SilkRoad-Next v4.0.0".ljust(58) + "│")
         print("│" + "  高性能反向代理服务器".ljust(58) + "│")
         print("│" + " " * 58 + "│")
         print("├" + "─" * 58 + "┤")
@@ -468,6 +524,12 @@ class SilkRoad:
         print("│  配置信息:".ljust(59) + "│")
         print(f"│    最大并发连接: {max_connections}".ljust(59) + "│")
         print(f"│    日志级别: {log_level}".ljust(59) + "│")
+        print("│" + " " * 58 + "│")
+        print("│  V4 新功能:".ljust(59) + "│")
+        ws_status = "已启用" if self.config.get('websocket.enabled', False) else "未启用"
+        tc_status = "已启用" if self.config.get('trafficControl.enabled', False) else "未启用"
+        print(f"│    WebSocket: {ws_status}".ljust(59) + "│")
+        print(f"│    流量控制: {tc_status}".ljust(59) + "│")
         print("│" + " " * 58 + "│")
         print("├" + "─" * 58 + "┤")
         print("│" + " " * 58 + "│")

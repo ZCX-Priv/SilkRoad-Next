@@ -239,6 +239,47 @@ class ConfigManager:
                     "maxWorkers": 4,
                     "queueSize": 1000
                 }
+            },
+            "websocket": {
+                "enabled": False,
+                "maxConnections": 500,
+                "maxMessageSize": 1048576,
+                "pingInterval": 30,
+                "pongTimeout": 10,
+                "compression": {
+                    "enabled": True,
+                    "level": 6
+                },
+                "extensions": {
+                    "permessage-deflate": True,
+                    "client-max-window-bits": 15,
+                    "server-max-window-bits": 15
+                }
+            },
+            "trafficControl": {
+                "enabled": False,
+                "maxBandwidth": 104857600,
+                "maxConnections": 5000,
+                "requestQueue": {
+                    "enabled": True,
+                    "maxSize": 10000,
+                    "timeout": 30
+                },
+                "rateLimit": {
+                    "enabled": True,
+                    "requestsPerSecond": 1000,
+                    "burstSize": 100
+                },
+                "scheduling": {
+                    "algorithm": "priority",
+                    "priorities": {
+                        "websocket": 10,
+                        "media": 8,
+                        "sse": 7,
+                        "html": 5,
+                        "static": 3
+                    }
+                }
             }
         }
 

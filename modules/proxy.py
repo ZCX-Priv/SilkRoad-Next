@@ -90,6 +90,10 @@ class ProxyServer:
         self.sse_handler = None
         self.others_handler = None
 
+        # V4 新增组件属性
+        self.websocket_handler = None
+        self.traffic_controller = None
+
         # 配置参数
         self.timeout = config.get('server.proxy.connectionTimeout', 30)
         self.request_timeout = config.get('server.proxy.requestTimeout', 60)
@@ -351,22 +355,54 @@ class ProxyServer:
         # 5. 构建转发请求头
         forward_headers = self._build_forward_headers(headers, target_url)
 
-        # ========== V3: 流式请求检查 ==========
-        # 注意：流式请求检查需要在构建转发请求头之后进行
-        if self._is_stream_request(headers, target_url):
-            self.logger.info(f"检测到流式请求，使用 V3 流处理器: {target_url}")
-            await self._handle_stream_request(
-                writer, method, target_url, forward_headers, body
+        # ========== V4: 流量控制检查 ==========
+        if self.traffic_controller:
+            from modules.controler import RequestInfo, RequestPriority, create_request_info
+            
+            request_info = create_request_info(
+                url=target_url,
+                method=method,
+                content_type=headers.get('Content-Type', ''),
+                client_ip=client_ip,
+                metadata={'upgrade': headers.get('Upgrade', '')}
             )
-            return
-
-        # 6. 发送请求到目标服务器（支持重定向）
-        # ========== V2: 使用连接池 ==========
-        if self.connection_pool:
-            await self._forward_request_with_pool(writer, method, target_url, forward_headers, body)
+            
+            request_info.priority = self.traffic_controller.determine_priority(request_info)
+            
+            if not await self.traffic_controller.acquire(request_info):
+                self.logger.warning(f"请求被流量控制拒绝: {target_url}")
+                await self._send_error(writer, 503, "Service Unavailable")
+                return
         else:
-            # V1 方式转发
-            await self._forward_request(writer, method, target_url, forward_headers, body)
+            request_info = None
+
+        try:
+            # ========== V4: WebSocket 升级检查 ==========
+            if self._is_websocket_upgrade(headers):
+                self.logger.info(f"检测到 WebSocket 升级请求，使用 V4 WebSocket 处理器: {target_url}")
+                await self.websocket_handler.handle_upgrade(
+                    writer, headers, target_url
+                )
+                return
+
+            # ========== V3: 流式请求检查 ==========
+            if self._is_stream_request(headers, target_url):
+                self.logger.info(f"检测到流式请求，使用 V3 流处理器: {target_url}")
+                await self._handle_stream_request(
+                    writer, method, target_url, forward_headers, body
+                )
+                return
+
+            # ========== V1/V2: 传统请求处理 ==========
+            if self.connection_pool:
+                await self._forward_request_with_pool(writer, method, target_url, forward_headers, body)
+            else:
+                await self._forward_request(writer, method, target_url, forward_headers, body)
+        
+        finally:
+            # ========== V4: 释放流量控制 ==========
+            if self.traffic_controller and request_info:
+                await self.traffic_controller.release(request_info)
 
     def _parse_request_line(self, request_line: bytes) -> Tuple[str, str, str]:
         """
@@ -1291,15 +1327,12 @@ class ProxyServer:
         Returns:
             是否为流式请求
         """
-        # 检查是否启用流处理
         if not self.config.get('stream.enabled', False):
             return False
 
-        # 检查是否有流处理器
         if not self.stream_handler:
             return False
 
-        # 1. 检查 Content-Type
         content_type = headers.get('Content-Type', '').lower()
         stream_types = [
             'video/',
@@ -1316,12 +1349,10 @@ class ProxyServer:
                 self.logger.debug(f"检测到流式请求 (Content-Type): {content_type}")
                 return True
 
-        # 2. 检查 Range 头（断点续传请求）
         if 'Range' in headers:
             self.logger.debug(f"检测到流式请求 (Range): {headers['Range']}")
             return True
 
-        # 3. 检查 URL 后缀
         stream_extensions = [
             '.mp4', '.mp3', '.avi', '.mov', '.flv', '.m3u8',
             '.ts', '.webm', '.ogg', '.mkv', '.wav', '.aac',
@@ -1330,6 +1361,37 @@ class ProxyServer:
         url_lower = url.lower()
         if any(url_lower.endswith(ext) for ext in stream_extensions):
             self.logger.debug(f"检测到流式请求 (URL 后缀): {url}")
+            return True
+
+        return False
+
+    def _is_websocket_upgrade(self, headers: Dict[str, str]) -> bool:
+        """
+        判断是否为 WebSocket 升级请求（V4 功能）
+
+        根据请求头判断是否为 WebSocket 升级请求：
+        1. Upgrade: websocket
+        2. Connection: Upgrade
+        3. Sec-WebSocket-Key 存在
+
+        Args:
+            headers: 请求头字典
+
+        Returns:
+            是否为 WebSocket 升级请求
+        """
+        if not self.config.get('websocket.enabled', False):
+            return False
+
+        if not self.websocket_handler:
+            return False
+
+        upgrade = headers.get('Upgrade', '').lower()
+        connection = headers.get('Connection', '').lower()
+        has_key = 'Sec-WebSocket-Key' in headers
+
+        if upgrade == 'websocket' and 'upgrade' in connection and has_key:
+            self.logger.debug("检测到 WebSocket 升级请求")
             return True
 
         return False
@@ -1551,9 +1613,9 @@ class ProxyServer:
         except Exception as e:
             self.logger.error(f"发送错误响应失败: {e}")
 
-    def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> Dict[str, Any]:
         """
-        获取服务器统计信息（V1 + V2 + V3）
+        获取服务器统计信息（V1 + V2 + V3 + V4）
 
         Returns:
             包含服务器状态信息的字典
@@ -1582,6 +1644,11 @@ class ProxyServer:
                 'media_handler': self.media_handler is not None,
                 'sse_handler': self.sse_handler is not None,
                 'others_handler': self.others_handler is not None
+            },
+            # V4 组件状态
+            'v4_components': {
+                'websocket_handler': self.websocket_handler is not None,
+                'traffic_controller': self.traffic_controller is not None
             }
         }
 
@@ -1646,5 +1713,18 @@ class ProxyServer:
                 stats['others'] = self.others_handler.get_stats()
             except Exception as e:
                 self.logger.warning(f"获取其他流统计信息失败: {e}")
+
+        # 添加 V4 组件统计信息
+        if self.websocket_handler:
+            try:
+                stats['websocket'] = self.websocket_handler.get_stats()
+            except Exception as e:
+                self.logger.warning(f"获取 WebSocket 统计信息失败: {e}")
+
+        if self.traffic_controller:
+            try:
+                stats['traffic_control'] = await self.traffic_controller.get_stats()
+            except Exception as e:
+                self.logger.warning(f"获取流量控制统计信息失败: {e}")
 
         return stats
