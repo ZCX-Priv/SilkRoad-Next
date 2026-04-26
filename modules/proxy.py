@@ -84,6 +84,12 @@ class ProxyServer:
         self.blacklist_manager = None
         self.script_injector = None
 
+        # V3 新增流处理器属性
+        self.stream_handler = None
+        self.media_handler = None
+        self.sse_handler = None
+        self.others_handler = None
+
         # 配置参数
         self.timeout = config.get('server.proxy.connectionTimeout', 30)
         self.request_timeout = config.get('server.proxy.requestTimeout', 60)
@@ -344,6 +350,15 @@ class ProxyServer:
 
         # 5. 构建转发请求头
         forward_headers = self._build_forward_headers(headers, target_url)
+
+        # ========== V3: 流式请求检查 ==========
+        # 注意：流式请求检查需要在构建转发请求头之后进行
+        if self._is_stream_request(headers, target_url):
+            self.logger.info(f"检测到流式请求，使用 V3 流处理器: {target_url}")
+            await self._handle_stream_request(
+                writer, method, target_url, forward_headers, body
+            )
+            return
 
         # 6. 发送请求到目标服务器（支持重定向）
         # ========== V2: 使用连接池 ==========
@@ -1260,6 +1275,130 @@ class ProxyServer:
 
         return False
 
+    def _is_stream_request(self, headers: Dict[str, str], url: str) -> bool:
+        """
+        判断是否为流式请求（V3 功能）
+
+        根据请求头和 URL 判断是否为流式请求，包括：
+        1. Content-Type 检查（video/*, audio/*, text/event-stream 等）
+        2. Range 请求头检查
+        3. URL 后缀检查（.mp4, .mp3, .m3u8 等）
+
+        Args:
+            headers: 请求头字典
+            url: 请求 URL
+
+        Returns:
+            是否为流式请求
+        """
+        # 检查是否启用流处理
+        if not self.config.get('stream.enabled', False):
+            return False
+
+        # 检查是否有流处理器
+        if not self.stream_handler:
+            return False
+
+        # 1. 检查 Content-Type
+        content_type = headers.get('Content-Type', '').lower()
+        stream_types = [
+            'video/',
+            'audio/',
+            'application/octet-stream',
+            'text/event-stream',
+            'multipart/x-mixed-replace',
+            'application/x-mpegurl',
+            'application/vnd.apple.mpegurl'
+        ]
+
+        for stream_type in stream_types:
+            if stream_type in content_type:
+                self.logger.debug(f"检测到流式请求 (Content-Type): {content_type}")
+                return True
+
+        # 2. 检查 Range 头（断点续传请求）
+        if 'Range' in headers:
+            self.logger.debug(f"检测到流式请求 (Range): {headers['Range']}")
+            return True
+
+        # 3. 检查 URL 后缀
+        stream_extensions = [
+            '.mp4', '.mp3', '.avi', '.mov', '.flv', '.m3u8',
+            '.ts', '.webm', '.ogg', '.mkv', '.wav', '.aac',
+            '.flac', '.m4a', '.m4v'
+        ]
+        url_lower = url.lower()
+        if any(url_lower.endswith(ext) for ext in stream_extensions):
+            self.logger.debug(f"检测到流式请求 (URL 后缀): {url}")
+            return True
+
+        return False
+
+    async def _handle_stream_request(self,
+                                      writer: asyncio.StreamWriter,
+                                      method: str,
+                                      target_url: str,
+                                      headers: Dict[str, str],
+                                      body: Optional[bytes]) -> None:
+        """
+        处理流式请求（V3 功能）
+
+        使用流处理器处理流式请求，支持：
+        1. 媒体流（视频/音频）
+        2. Server-Sent Events (SSE)
+        3. 分块传输
+        4. 断点续传（Range 请求）
+
+        Args:
+            writer: 流写入器
+            method: HTTP 方法
+            target_url: 目标 URL
+            headers: 请求头
+            body: 请求体
+        """
+        assert self.session is not None
+
+        try:
+            self.logger.info(f"开始处理流式请求: {method} {target_url}")
+
+            # 发送请求到目标服务器
+            async with self.session.request(
+                method,
+                target_url,
+                headers=headers,
+                data=body,
+                allow_redirects=False,
+                ssl=False
+            ) as response:
+                # 使用流处理器处理响应
+                if self.stream_handler:
+                    await self.stream_handler.handle_stream(
+                        writer, response, target_url, headers
+                    )
+                else:
+                    # 降级到 V1 的简单流式传输
+                    self.logger.warning("流处理器未初始化，降级到 V1 流式传输")
+                    await self._stream_response(writer, response)
+
+        except asyncio.TimeoutError:
+            self.logger.error(f"流请求超时: {target_url}")
+            await self._send_error(writer, 504, "Gateway Timeout")
+
+        except aiohttp.ClientError as e:
+            self.logger.error(f"目标服务器错误 [{target_url}]: {e}")
+            await self._send_error(writer, 502, "Bad Gateway")
+
+        except ConnectionResetError:
+            self.logger.warning(f"连接被重置: {target_url}")
+            # 连接已重置，无法发送错误响应
+
+        except Exception as e:
+            self.logger.error(f"流请求处理失败 [{target_url}]: {e}", exc_info=True)
+            try:
+                await self._send_error(writer, 502, "Bad Gateway")
+            except Exception:
+                pass
+
     async def _handle_command(self, writer: asyncio.StreamWriter,
                                path: str, method: str) -> None:
         """
@@ -1414,7 +1553,7 @@ class ProxyServer:
 
     def get_stats(self) -> Dict[str, Any]:
         """
-        获取服务器统计信息（V1 + V2）
+        获取服务器统计信息（V1 + V2 + V3）
 
         Returns:
             包含服务器状态信息的字典
@@ -1436,6 +1575,13 @@ class ProxyServer:
                 'cache_manager': self.cache_manager is not None,
                 'blacklist_manager': self.blacklist_manager is not None,
                 'script_injector': self.script_injector is not None
+            },
+            # V3 组件状态
+            'v3_components': {
+                'stream_handler': self.stream_handler is not None,
+                'media_handler': self.media_handler is not None,
+                'sse_handler': self.sse_handler is not None,
+                'others_handler': self.others_handler is not None
             }
         }
 
@@ -1475,5 +1621,30 @@ class ProxyServer:
                 stats['scripts'] = self.script_injector.get_stats()
             except Exception as e:
                 self.logger.warning(f"获取脚本注入统计信息失败: {e}")
+
+        # 添加 V3 组件统计信息
+        if self.stream_handler:
+            try:
+                stats['stream'] = self.stream_handler.get_stats()
+            except Exception as e:
+                self.logger.warning(f"获取流处理统计信息失败: {e}")
+
+        if self.media_handler:
+            try:
+                stats['media'] = self.media_handler.get_stats()
+            except Exception as e:
+                self.logger.warning(f"获取媒体流统计信息失败: {e}")
+
+        if self.sse_handler:
+            try:
+                stats['sse'] = self.sse_handler.get_stats()
+            except Exception as e:
+                self.logger.warning(f"获取 SSE 统计信息失败: {e}")
+
+        if self.others_handler:
+            try:
+                stats['others'] = self.others_handler.get_stats()
+            except Exception as e:
+                self.logger.warning(f"获取其他流统计信息失败: {e}")
 
         return stats

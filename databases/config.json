@@ -129,5 +129,35 @@
       "configFile": "databases/scripts.json",
       "reloadInterval": 300
     }
+  },
+  "stream": {
+    "enabled": true,
+    "media": {
+      "enabled": true,
+      "bufferSize": 65536,
+      "enableRange": true,
+      "maxBufferSize": 10485760,
+      "timeout": 3600
+    },
+    "sse": {
+      "enabled": true,
+      "heartbeatInterval": 15,
+      "reconnectTimeout": 3000,
+      "maxConnections": 100
+    },
+    "chunked": {
+      "enabled": true,
+      "defaultChunkSize": 8192,
+      "maxChunkSize": 65536
+    },
+    "buffer": {
+      "memoryLimit": 104857600,
+      "diskCachePath": "./cache/stream",
+      "diskCacheLimit": 1073741824
+    },
+    "rateLimit": {
+      "enabled": false,
+      "maxRate": 10485760
+    }
   }
 }
