@@ -20,6 +20,7 @@ from modules.logging import Logger
 from modules.proxy import ProxyServer
 from modules.command import CommandHandler
 from modules.exit import GracefulExit
+from modules.wafpasser import WAFPasser, WAFDetector
 
 
 class SilkRoad:
@@ -110,9 +111,16 @@ class SilkRoad:
         # 流量控制器（用于请求调度和带宽管理）
         self.traffic_controller = None
 
+        # ========== V5 新增组件 ==========
+        # WAF 穿透模块（用于 WAF 检测和绕过）
+        self.waf_passer = None
+
+        # WAF 检测器（用于检测 WAF 拦截）
+        self.waf_detector = None
+
     async def initialize(self) -> None:
         """
-        初始化所有模块（V1 + V2 + V3）
+        初始化所有模块（V1 + V2 + V3 + V4 + V5）
 
         按照依赖顺序初始化所有核心模块：
         1. 加载配置文件
@@ -126,9 +134,10 @@ class SilkRoad:
         9. 初始化流处理器（V3）
         10. 初始化 WebSocket 处理器（V4）
         11. 初始化流量控制器（V4）
-        12. 创建代理服务器
-        13. 创建命令处理器
-        14. 设置优雅退出
+        12. 初始化 WAF 穿透模块（V5）
+        13. 创建代理服务器
+        14. 创建命令处理器
+        15. 设置优雅退出
 
         Raises:
             ConfigError: 配置加载失败
@@ -239,7 +248,7 @@ class SilkRoad:
 
             # ========== V4 初始化 ==========
             # 10. 初始化 WebSocket 处理器
-            print("[10/14] 初始化 WebSocket 处理器...")
+            print("[10/15] 初始化 WebSocket 处理器...")
             if self.config.get('websocket.enabled', False):
                 from modules.websockets import WebSocketHandler
                 
@@ -247,7 +256,7 @@ class SilkRoad:
                 self.logger.info("WebSocket 处理器已启用")
 
             # 11. 初始化流量控制器
-            print("[11/14] 初始化流量控制器...")
+            print("[11/15] 初始化流量控制器...")
             if self.config.get('trafficControl.enabled', False):
                 from modules.controler import TrafficController
                 
@@ -256,8 +265,22 @@ class SilkRoad:
                 asyncio.create_task(self.traffic_controller.start_scheduler())
                 self.logger.info("流量控制器已启用")
 
+            # ========== V5 初始化 ==========
+            # 12. 初始化 WAF 穿透模块
+            print("[12/15] 初始化 WAF 穿透模块...")
+            if self.config.get('waf_evasion.enabled', False):
+                self.waf_passer = WAFPasser()
+                self.waf_detector = WAFDetector(self.waf_passer)
+                
+                # 输出 WAF 穿透启用状态
+                waf_types_count = len(self.waf_passer.waf_signatures)
+                strategies_count = len(self.waf_passer.evasion_strategies)
+                self.logger.info(f"WAF 穿透模块已启用 | 支持的 WAF 类型: {waf_types_count} | 绕过策略: {strategies_count}")
+            else:
+                self.logger.info("WAF 穿透模块未启用")
+
             # ========== 创建代理服务器 ==========
-            print("[12/14] 创建代理服务器...")
+            print("[13/15] 创建代理服务器...")
             proxy_host = self.config.get('server.proxy.host', '0.0.0.0')
             proxy_port = self.config.get('server.proxy.port', 8080)
 
@@ -286,10 +309,14 @@ class SilkRoad:
             self.proxy_server.websocket_handler = self.websocket_handler
             self.proxy_server.traffic_controller = self.traffic_controller
 
+            # 注入 V5 模块到代理服务器
+            self.proxy_server.waf_passer = self.waf_passer
+            self.proxy_server.waf_detector = self.waf_detector
+
             self.logger.info(f"代理服务器配置: {proxy_host}:{proxy_port}")
 
-            # 13. 创建命令处理器
-            print("[13/14] 创建命令处理器...")
+            # 14. 创建命令处理器
+            print("[14/15] 创建命令处理器...")
             self.command_handler = CommandHandler(
                 proxy_server=self.proxy_server,
                 config=self.config,
@@ -298,8 +325,8 @@ class SilkRoad:
             self.proxy_server.command_handler = self.command_handler
             self.logger.info("命令处理器已绑定到代理服务器")
 
-            # 14. 设置优雅退出
-            print("[14/14] 设置优雅退出...")
+            # 15. 设置优雅退出
+            print("[15/15] 设置优雅退出...")
             GracefulExit.setup(self.shutdown_event, self.logger)
 
             # ========== 初始化完成 ==========
@@ -309,7 +336,7 @@ class SilkRoad:
             print("=" * 60)
             print()
 
-            self.logger.info("所有模块初始化完成（V1 + V2 + V3 + V4）")
+            self.logger.info("所有模块初始化完成（V1 + V2 + V3 + V4 + V5）")
 
         except ConfigError as e:
             print(f"[错误] 配置加载失败: {e}")
@@ -333,16 +360,17 @@ class SilkRoad:
         3. 启动命令处理器
         4. 等待关闭信号
 
-        关闭流程（V1 + V2 + V3 + V4）：
+        关闭流程（V1 + V2 + V3 + V4 + V5）：
         1. 关闭 WebSocket 连接（V4）
         2. 停止流量控制器（V4）
-        3. 关闭流处理器（V3）
-        4. 关闭连接池（V2）
-        5. 关闭线程池（V2）
-        6. 保存会话数据（V2）
-        7. 清理缓存（V2）
-        8. 停止代理服务器（V1）
-        9. 关闭日志系统（V1）
+        3. 关闭 WAF 穿透模块（V5）
+        4. 关闭流处理器（V3）
+        5. 关闭连接池（V2）
+        6. 关闭线程池（V2）
+        7. 保存会话数据（V2）
+        8. 清理缓存（V2）
+        9. 停止代理服务器（V1）
+        10. 关闭日志系统（V1）
 
         Raises:
             Exception: 启动过程中的任何错误
@@ -384,14 +412,17 @@ class SilkRoad:
         """
         等待关闭信号
 
-        阻塞等待关闭事件被触发，然后执行优雅关闭流程（V1 + V2 + V3）：
-        1. 关闭流处理器（V3）
-        2. 关闭连接池（V2）
-        3. 关闭线程池（V2）
-        4. 保存会话数据（V2）
-        5. 清理缓存（V2）
-        6. 停止代理服务器（V1）
-        7. 关闭日志系统（V1）
+        阻塞等待关闭事件被触发，然后执行优雅关闭流程（V1 + V2 + V3 + V4 + V5）：
+        1. 关闭 WebSocket 连接（V4）
+        2. 停止流量控制器（V4）
+        3. 关闭 WAF 穿透模块（V5）
+        4. 关闭流处理器（V3）
+        5. 关闭连接池（V2）
+        6. 关闭线程池（V2）
+        7. 保存会话数据（V2）
+        8. 清理缓存（V2）
+        9. 停止代理服务器（V1）
+        10. 关闭日志系统（V1）
         """
         await self.shutdown_event.wait()
 
@@ -406,7 +437,7 @@ class SilkRoad:
             # ========== 关闭 V4 模块 ==========
             # 1. 关闭 WebSocket 连接
             if self.websocket_handler:
-                self.logger.info("[1/9] 关闭 WebSocket 连接...")
+                self.logger.info("[1/10] 关闭 WebSocket 连接...")
                 connections = await self.websocket_handler.get_active_connections()
                 for conn in connections:
                     await self.websocket_handler.close_connection(conn.connection_id)
@@ -414,47 +445,56 @@ class SilkRoad:
 
             # 2. 停止流量控制器
             if self.traffic_controller:
-                self.logger.info("[2/9] 停止流量控制器...")
+                self.logger.info("[2/10] 停止流量控制器...")
                 # 流量控制器无需特殊关闭
 
+            # ========== 关闭 V5 模块 ==========
+            # 3. 关闭 WAF 穿透模块
+            if self.waf_passer:
+                self.logger.info("[3/10] 关闭 WAF 穿透模块...")
+                # WAF 穿透模块无需特殊关闭，清理引用即可
+                self.waf_passer = None
+                self.waf_detector = None
+                self.logger.info("WAF 穿透模块已关闭")
+
             # ========== 关闭 V3 模块 ==========
-            # 3. 关闭流处理器
+            # 4. 关闭流处理器
             if self.stream_handler:
-                self.logger.info("[3/9] 关闭流处理器...")
+                self.logger.info("[4/10] 关闭流处理器...")
                 active_streams = await self.stream_handler.get_active_streams()
                 for stream_id in active_streams:
                     await self.stream_handler.close_stream(stream_id)
                 self.logger.info(f"已关闭 {len(active_streams)} 个活跃流")
 
             # ========== 关闭 V2 模块 ==========
-            # 4. 关闭连接池
+            # 5. 关闭连接池
             if self.connection_pool:
-                self.logger.info("[4/9] 关闭连接池...")
+                self.logger.info("[5/10] 关闭连接池...")
                 await self.connection_pool.close_all()
 
-            # 5. 关闭线程池
+            # 6. 关闭线程池
             if self.thread_pool:
-                self.logger.info("[5/9] 关闭线程池...")
+                self.logger.info("[6/10] 关闭线程池...")
                 self.thread_pool.shutdown()
 
-            # 6. 保存会话数据
+            # 7. 保存会话数据
             if self.session_manager:
-                self.logger.info("[6/9] 保存会话数据...")
+                self.logger.info("[7/10] 保存会话数据...")
                 await self.session_manager.save_to_file('sessions_backup.json')
 
-            # 7. 清理缓存
+            # 8. 清理缓存
             if self.cache_manager:
-                self.logger.info("[7/9] 清理缓存...")
+                self.logger.info("[8/10] 清理缓存...")
                 await self.cache_manager.clear_all()
 
             # ========== 关闭 V1 模块 ==========
-            # 8. 停止代理服务器
+            # 9. 停止代理服务器
             if self.proxy_server:
-                self.logger.info("[8/9] 停止代理服务器...")
+                self.logger.info("[9/10] 停止代理服务器...")
                 await self.proxy_server.stop()
 
-            # 9. 关闭日志系统
-            self.logger.info("[9/9] 关闭日志系统...")
+            # 10. 关闭日志系统
+            self.logger.info("[10/10] 关闭日志系统...")
             await self.logger.close()
 
             print()
@@ -530,6 +570,10 @@ class SilkRoad:
         tc_status = "已启用" if self.config.get('trafficControl.enabled', False) else "未启用"
         print(f"│    WebSocket: {ws_status}".ljust(59) + "│")
         print(f"│    流量控制: {tc_status}".ljust(59) + "│")
+        print("│" + " " * 58 + "│")
+        print("│  V5 新功能:".ljust(59) + "│")
+        waf_status = "已启用" if self.config.get('waf_evasion.enabled', False) else "未启用"
+        print(f"│    WAF 穿透: {waf_status}".ljust(59) + "│")
         print("│" + " " * 58 + "│")
         print("├" + "─" * 58 + "┤")
         print("│" + " " * 58 + "│")

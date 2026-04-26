@@ -8,6 +8,7 @@
 4. 自动清理过期连接
 5. 连接健康检查
 6. 连接复用与限制
+7. 会话持久化支持（V5 集成）
 
 作者: SilkRoad-Next Team
 版本: 2.0.0
@@ -15,10 +16,12 @@
 
 import asyncio
 import aiohttp
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Any
 from datetime import datetime
 import time
 import logging
+
+from modules.wafpasser import SessionPersistenceManager
 
 
 class ConnectionPool:
@@ -86,6 +89,12 @@ class ConnectionPool:
         # 日志记录器
         self._logger = logger or logging.getLogger(__name__)
         
+        # 会话持久化管理器（V5 集成）
+        self.session_manager = SessionPersistenceManager()
+        
+        # 当前会话的 Cookie 缓存（用于会话持久化）
+        self._session_cookies: Dict[str, str] = {}
+        
         # 统计信息
         self.stats = {
             'total_connections': 0,
@@ -106,7 +115,8 @@ class ConnectionPool:
     async def get_connection(self, 
                             host: str, 
                             port: int = 443, 
-                            is_https: bool = True) -> Optional[aiohttp.TCPConnector]:
+                            is_https: bool = True,
+                            session_id: Optional[str] = None) -> Optional[aiohttp.TCPConnector]:
         """
         从连接池获取一个可用连接
         
@@ -114,6 +124,7 @@ class ConnectionPool:
             host: 目标主机名
             port: 目标端口
             is_https: 是否为 HTTPS 连接
+            session_id: 会话 ID（可选，用于会话持久化）
             
         Returns:
             可用的连接对象，如果没有可用连接则返回 None
@@ -121,6 +132,15 @@ class ConnectionPool:
         Raises:
             ConnectionError: 当连接池已满且无法创建新连接时
         """
+        # 如果提供了 session_id，尝试加载会话数据
+        if session_id:
+            session_data = self.session_manager.load_session(session_id)
+            if session_data:
+                self._logger.debug(
+                    f"使用会话数据创建连接: session_id={session_id}, host={host}"
+                )
+                return await self._create_connection_with_session(host, port, is_https, session_data)
+        
         async with self._lock:
             pool_key = f"{host}:{port}"
             
@@ -267,6 +287,92 @@ class ConnectionPool:
         self._logger.debug(
             f"新连接注册: {pool_key} (id={connection_id})"
         )
+    
+    async def _create_connection_with_session(
+        self,
+        host: str,
+        port: int,
+        is_https: bool,
+        session_data: Dict[str, Any]
+    ) -> Optional[aiohttp.TCPConnector]:
+        """
+        使用会话数据创建连接
+        
+        V5 集成功能：从会话数据中加载 Cookie 并应用到连接
+        
+        Args:
+            host: 目标主机名
+            port: 目标端口
+            is_https: 是否为 HTTPS 连接
+            session_data: 会话数据（包含 cookies、tokens 等）
+            
+        Returns:
+            创建的连接对象
+        """
+        # 创建新的 TCPConnector
+        connector = aiohttp.TCPConnector(
+            limit=self.max_connections_per_host,
+            ttl_dns_cache=300,
+            enable_cleanup_closed=True
+        )
+        
+        # 从会话数据中提取 Cookie
+        cookies = session_data.get("cookies", {})
+        domain_cookies: Dict[str, str] = {}
+        
+        for cookie_name, cookie_data in cookies.items():
+            # 检查 Cookie 是否匹配当前域名
+            if self._cookie_matches_domain(cookie_data, host):
+                domain_cookies[cookie_name] = cookie_data.get("value", "")
+        
+        # 将 Cookie 存储到实例属性中，供后续请求使用
+        self._session_cookies = domain_cookies
+        
+        # 注册连接到连接池管理
+        self.register_connection(host, port, connector)
+        
+        self._logger.debug(
+            f"使用会话数据创建连接成功: host={host}, cookies_count={len(domain_cookies)}"
+        )
+        
+        return connector
+    
+    def _cookie_matches_domain(self, cookie_data: Dict[str, Any], domain: str) -> bool:
+        """
+        检查 Cookie 是否匹配域名
+        
+        Args:
+            cookie_data: Cookie 数据字典
+            domain: 目标域名
+            
+        Returns:
+            如果 Cookie 匹配域名则返回 True，否则返回 False
+        """
+        cookie_domain = cookie_data.get("domain", "")
+        
+        # 如果 Cookie 没有指定域名，则匹配所有域名
+        if not cookie_domain:
+            return True
+        
+        # 处理以点开头的域名（如 .example.com）
+        if cookie_domain.startswith("."):
+            return domain.endswith(cookie_domain[1:]) or domain == cookie_domain[1:]
+        
+        # 精确匹配或子域名匹配
+        return domain == cookie_domain or domain.endswith("." + cookie_domain)
+    
+    def get_session_cookies(self) -> Dict[str, str]:
+        """
+        获取当前会话的 Cookie
+        
+        Returns:
+            当前会话的 Cookie 字典
+        """
+        return self._session_cookies.copy()
+    
+    def clear_session_cookies(self) -> None:
+        """清除当前会话的 Cookie 缓存"""
+        self._session_cookies = {}
     
     async def _is_connection_valid(self, 
                                    connection: aiohttp.TCPConnector,

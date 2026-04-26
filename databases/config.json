@@ -82,7 +82,10 @@
     "compression": "zip",
     "colorize": true,
     "errorLog": true,
-    "errorLogFormat": "{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} - {message}\n{exception}"
+    "errorLogFormat": "{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} - {message}\n{exception}",
+    "waf_detection": true,
+    "evasion_attempts": true,
+    "success_rate_tracking": true
   },
   "cache": {
     "enabled": true,
@@ -159,5 +162,64 @@
       "enabled": false,
       "maxRate": 10485760
     }
+  },
+  "waf_evasion": {
+    "enabled": true,
+    "aggressive_mode": false,
+    "strategies": {
+      "user_agent_rotation": {
+        "enabled": true,
+        "rotation_interval": 300
+      },
+      "header_obfuscation": {
+        "enabled": true,
+        "browser_profiles": ["chrome", "firefox", "safari", "edge"]
+      },
+      "referer_spoofing": {
+        "enabled": true,
+        "probability": 0.7
+      },
+      "request_pacing": {
+        "enabled": true,
+        "min_delay": 0.5,
+        "max_delay": 5.0,
+        "adaptive": true
+      },
+      "cookie_handling": {
+        "enabled": true,
+        "persistent_sessions": true,
+        "session_max_age_hours": 24
+      },
+      "javascript_challenge_solver": {
+        "enabled": true,
+        "timeout": 10.0,
+        "retry_count": 3
+      }
+    },
+    "waf_specific": {
+      "cloudflare": {
+        "enabled": true,
+        "solve_js_challenge": true,
+        "respect_rate_limit": true
+      },
+      "akamai": {
+        "enabled": true,
+        "use_akamai_headers": true
+      },
+      "imperva": {
+        "enabled": true,
+        "session_persistence": true
+      }
+    },
+    "fallback": {
+      "strategy": "transparent_proxy",
+      "error_page": "pages/error/waf_blocked.html"
+    }
+  },
+  "session_persistence": {
+    "enabled": true,
+    "storage_path": "databases/sessions",
+    "cleanup_interval_hours": 6,
+    "max_session_age_hours": 48
   }
 }

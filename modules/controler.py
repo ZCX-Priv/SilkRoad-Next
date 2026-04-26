@@ -14,6 +14,7 @@ Version: 4.0.0
 """
 
 import asyncio
+import random
 import time
 from typing import Optional, Dict, Any, List
 from enum import Enum
@@ -21,6 +22,8 @@ from dataclasses import dataclass, field
 from collections import deque
 import logging
 import uuid
+
+from modules.wafpasser import WAFPasser, RequestObfuscator
 
 
 class RequestPriority(Enum):
@@ -84,6 +87,10 @@ class TrafficController:
         self.rate_limit_enabled = config.get('trafficControl.rateLimit.enabled', True)
         self.requests_per_second = config.get('trafficControl.rateLimit.requestsPerSecond', 1000)
         self.burst_size = config.get('trafficControl.rateLimit.burstSize', 100)
+        
+        # 初始化 WAF 穿透模块
+        self.waf_passer = WAFPasser()
+        self.request_obfuscator = RequestObfuscator(self.waf_passer)
         
         self._request_queues: Dict[RequestPriority, deque] = {
             priority: deque() for priority in RequestPriority
@@ -335,6 +342,103 @@ class TrafficController:
                 if request_info:
                     if await self.acquire(request_info):
                         self.logger.debug(f"调度请求: {request_info.url}")
+    
+    async def schedule_request(self, request: Any, target_domain: str) -> bool:
+        """
+        调度请求 - 集成 WAF 绕过策略
+        
+        Args:
+            request: 请求对象
+            target_domain: 目标域名
+            
+        Returns:
+            调度结果
+        """
+        waf_evasion_config = self.config.get('waf_evasion', {})
+        
+        # 检查配置是否启用请求速率控制
+        if waf_evasion_config.get('request_pacing', {}).get('enabled', False):
+            delay = self._calculate_adaptive_delay(target_domain)
+            await asyncio.sleep(delay)
+        
+        # 检查配置是否启用 WAF 穿透
+        if waf_evasion_config.get('enabled', False):
+            request = self._apply_evasion_headers(request, target_domain)
+        
+        return await self._enqueue_request_for_schedule(request)
+    
+    def _calculate_adaptive_delay(self, domain: str) -> float:
+        """
+        计算自适应延迟
+        
+        根据历史成功率动态调整延迟时间
+        
+        Args:
+            domain: 目标域名
+            
+        Returns:
+            延迟时间（秒）
+        """
+        stats = self.waf_passer.success_stats.get(domain, {})
+        
+        total = stats.get('total', 1)
+        success = stats.get('success', 0)
+        success_rate = success / max(total, 1)
+        
+        if success_rate > 0.9:
+            return random.uniform(0.5, 1.5)
+        elif success_rate > 0.7:
+            return random.uniform(1.0, 3.0)
+        elif success_rate > 0.5:
+            return random.uniform(2.0, 5.0)
+        else:
+            return random.uniform(5.0, 10.0)
+    
+    def _apply_evasion_headers(self, request: Any, domain: str) -> Any:
+        """
+        应用绕过请求头
+        
+        使用 request_obfuscator.obfuscate_headers 混淆请求头
+        
+        Args:
+            request: 请求对象
+            domain: 目标域名
+            
+        Returns:
+            修改后的请求对象
+        """
+        # 获取原始请求头
+        original_headers = dict(request.headers) if hasattr(request, 'headers') else {}
+        
+        # 获取目标 URL
+        target_url = str(request.url) if hasattr(request, 'url') else f"https://{domain}"
+        
+        # 使用 request_obfuscator 混淆请求头
+        obfuscated_headers = self.request_obfuscator.obfuscate_headers(
+            original_headers,
+            target_url
+        )
+        
+        # 更新请求头
+        if hasattr(request, 'headers'):
+            for key, value in obfuscated_headers.items():
+                request.headers[key] = value
+        
+        return request
+    
+    async def _enqueue_request_for_schedule(self, request: Any) -> bool:
+        """
+        将请求加入调度队列
+        
+        Args:
+            request: 请求对象
+            
+        Returns:
+            是否成功加入队列
+        """
+        # 简化实现：直接返回 True
+        # 实际使用时可根据需要扩展
+        return True
 
 
 class BandwidthManager:
