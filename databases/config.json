@@ -1,7 +1,4 @@
 {
-  "_comment": "SilkRoad-Next 配置文件 - V2 扩展版本",
-  "_version": "2.0.0",
-  
   "server": {
     "proxy": {
       "host": "127.0.0.1",
@@ -16,7 +13,6 @@
       "enabled": true
     }
   },
-  
   "proxy": {
     "targetPrefix": "",
     "stripPrefix": false,
@@ -47,7 +43,6 @@
     "acceptEncoding": ["gzip", "deflate"],
     "defaultUserAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   },
-  
   "urlRewrite": {
     "enabled": true,
     "maxContentSize": 10485760,
@@ -74,13 +69,11 @@
       "application/xhtml+xml"
     ]
   },
-  
   "pageRoutes": {
     "/": "main",
     "/admin": "admin",
     "/error": "error"
   },
-  
   "logging": {
     "level": "INFO",
     "format": "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
@@ -91,14 +84,12 @@
     "errorLog": true,
     "errorLogFormat": "{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} - {message}\n{exception}"
   },
-  
   "cache": {
     "enabled": false,
     "maxSize": 1073741824,
     "defaultTTL": 3600,
     "cleanupInterval": 300
   },
-  
   "security": {
     "rateLimit": {
       "enabled": false,
@@ -108,7 +99,6 @@
     "maxRequestSize": 52428800,
     "allowedMethods": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
   },
-  
   "performance": {
     "connectionPool": {
       "enabled": false,
@@ -120,59 +110,6 @@
       "enabled": false,
       "maxWorkers": 4,
       "queueSize": 1000
-    }
-  },
-  
-  "v2": {
-    "_comment": "V2 版本新增模块配置",
-    
-    "connectionPool": {
-      "enabled": true,
-      "maxConnectionsPerHost": 10,
-      "connectionTimeout": 30,
-      "keepAliveTimeout": 60,
-      "_description": "目标服务器连接池配置，维护与高频目标服务器的长连接"
-    },
-    
-    "threadPool": {
-      "enabled": true,
-      "maxWorkers": 8,
-      "_description": "CPU 密集型任务线程池配置，用于处理解压缩、正则替换等任务"
-    },
-    
-    "session": {
-      "enabled": true,
-      "timeout": 1800,
-      "cleanupInterval": 60,
-      "persistEnabled": false,
-      "persistFile": "databases/sessions.json",
-      "_description": "客户端会话管理配置，timeout 为会话超时时间（秒）"
-    },
-    
-    "cacheManager": {
-      "enabled": true,
-      "maxMemoryCacheSize": 104857600,
-      "maxDiskCacheSize": 1073741824,
-      "defaultTTL": 3600,
-      "diskCacheDir": "./cache",
-      "cleanupInterval": 300,
-      "_description": "缓存管理器配置，支持内存缓存和磁盘缓存，大小单位为字节"
-    },
-    
-    "blacklist": {
-      "enabled": true,
-      "configFile": "databases/blacklist.json",
-      "autoReload": false,
-      "reloadInterval": 300,
-      "_description": "黑名单拦截配置，支持 IP、域名、URL 等多种拦截策略"
-    },
-    
-    "scriptInjection": {
-      "enabled": true,
-      "configFile": "databases/scripts.json",
-      "autoReload": false,
-      "reloadInterval": 300,
-      "_description": "脚本注入配置，支持条件注入、优先级控制和位置选择"
     }
   }
 }

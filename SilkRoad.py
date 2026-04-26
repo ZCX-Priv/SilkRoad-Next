@@ -7,12 +7,8 @@ SilkRoad-Next 程序主入口
 - 注册信号处理器
 - 协调各模块生命周期
 
-V2 扩展功能：
-- V2 模块状态显示
-- V2 模块清理任务
-
 Author: SilkRoad-Next Team
-Version: 2.0.0
+Version: 1.0.0
 """
 
 import asyncio
@@ -77,23 +73,22 @@ class SilkRoad:
             Exception: 其他初始化错误
         """
         try:
+            # ========== 1. 加载配置 ==========
             print("=" * 60)
-            print("  SilkRoad-Next v2.0.0 - 高性能反向代理服务器")
+            print("  SilkRoad-Next v1.0.0 - 高性能反向代理服务器")
             print("=" * 60)
             print()
             print("[1/5] 加载配置文件...")
 
             await self.config.load()
 
+            # ========== 2. 初始化日志系统 ==========
             print("[2/5] 初始化日志系统...")
 
             self.logger = Logger(self.config)
             self.logger.info("配置加载完成")
 
-            v2_enabled = self.config.get('v2.enabled', True)
-            if v2_enabled:
-                self.logger.info("V2 增强功能已启用")
-
+            # ========== 3. 创建代理服务器 ==========
             print("[3/5] 创建代理服务器...")
 
             proxy_host = self.config.get('server.proxy.host', '0.0.0.0')
@@ -196,7 +191,7 @@ class SilkRoad:
         等待关闭信号
 
         阻塞等待关闭事件被触发，然后执行优雅关闭流程：
-        1. 停止代理服务器（包含V2模块清理）
+        1. 停止代理服务器
         2. 关闭日志系统
         """
         await self.shutdown_event.wait()
@@ -210,7 +205,7 @@ class SilkRoad:
 
         try:
             if self.proxy_server:
-                self.logger.info("[1/2] 停止代理服务器和V2模块...")
+                self.logger.info("[1/2] 停止代理服务器...")
                 await self.proxy_server.stop()
 
             self.logger.info("[2/2] 关闭日志系统...")
@@ -218,10 +213,11 @@ class SilkRoad:
 
             print()
             print("=" * 60)
-            print("  SilkRoad-Next v2.0.0 已安全退出")
+            print("  SilkRoad-Next 已安全退出")
             print("=" * 60)
 
         except Exception as e:
+            # 关闭过程中的错误
             if self.logger:
                 self.logger.error(f"关闭过程中发生错误: {e}")
             else:
@@ -237,29 +233,13 @@ class SilkRoad:
         proxy_port = self.config.get('server.proxy.port', 8080)
         max_connections = self.config.get('server.proxy.maxConnections', 2000)
         log_level = self.config.get('logging.level', 'INFO')
-        v2_enabled = self.config.get('v2.enabled', True)
 
         display_host = '127.0.0.1' if proxy_host == '0.0.0.0' else proxy_host
-
-        v2_features = []
-        if v2_enabled:
-            if self.config.get('connectionPool.maxConnectionsPerHost', 10) > 0:
-                v2_features.append("连接池")
-            if self.config.get('threadPool.maxWorkers'):
-                v2_features.append("线程池")
-            if self.config.get('session.timeout', 1800) > 0:
-                v2_features.append("会话管理")
-            if self.config.get('cache.maxMemoryCacheSize', 104857600) > 0:
-                v2_features.append("缓存管理")
-            if self.config.get('blacklist.enabled', True):
-                v2_features.append("黑名单拦截")
-            if self.config.get('scripts.enabled', True):
-                v2_features.append("脚本注入")
 
         print()
         print("┌" + "─" * 58 + "┐")
         print("│" + " " * 58 + "│")
-        print("│" + "  SilkRoad-Next v2.0.0".ljust(58) + "│")
+        print("│" + "  SilkRoad-Next v1.0.0".ljust(58) + "│")
         print("│" + "  高性能反向代理服务器".ljust(58) + "│")
         print("│" + " " * 58 + "│")
         print("├" + "─" * 58 + "┤")
@@ -271,8 +251,6 @@ class SilkRoad:
         print("│  配置信息:".ljust(59) + "│")
         print(f"│    最大并发连接: {max_connections}".ljust(59) + "│")
         print(f"│    日志级别: {log_level}".ljust(59) + "│")
-        if v2_enabled and v2_features:
-            print(f"│    V2 功能: {', '.join(v2_features)}".ljust(59) + "│")
         print("│" + " " * 58 + "│")
         print("├" + "─" * 58 + "┤")
         print("│" + " " * 58 + "│")
