@@ -105,13 +105,24 @@ class HTMLHandler:
         Args:
             html: HTML文本内容
             base_url: 基础URL，用于补全相对URL
-            config: 配置字典
+            config: 配置字典，包含以下可选配置：
+                - urlRewrite.enabled: 是否启用URL重写
+                - urlRewrite.skipDomains: 跳过的域名列表
+                - urlRewrite.customRules: 自定义URL重写规则
 
         Returns:
             重写后的HTML文本
         """
+        url_rewrite_config = config.get('urlRewrite', {})
+        
+        if not url_rewrite_config.get('enabled', True):
+            return html
+        
+        self.skip_domains = url_rewrite_config.get('skipDomains', [])
+        self.custom_rules = url_rewrite_config.get('customRules', {})
+        
         html = await self._inject_csp_meta(html)
-
+        
         for pattern, attr_name in self.tag_patterns:
             if attr_name == 'srcset':
                 html = await self._rewrite_srcset_attr(html, pattern, base_url)
@@ -319,6 +330,32 @@ class HTMLHandler:
 
         return self.style_url_pattern.sub(replace_url, style)
 
+    def _should_skip_url(self, url: str) -> bool:
+        """
+        判断是否应该跳过URL重写
+
+        Args:
+            url: URL字符串
+
+        Returns:
+            True表示跳过，False表示需要重写
+        """
+        if self.special_protocols.match(url):
+            return True
+
+        skip_domains = getattr(self, 'skip_domains', [])
+        if skip_domains:
+            try:
+                parsed = urlsplit(url if url.startswith('http') else f'http://{url}')
+                domain = parsed.netloc.lower()
+                for skip_domain in skip_domains:
+                    if domain == skip_domain.lower() or domain.endswith('.' + skip_domain.lower()):
+                        return True
+            except Exception:
+                pass
+
+        return False
+
     def _rewrite_single_url(self, url: str, base_url: str) -> str:
         """
         重写单个URL
@@ -336,6 +373,9 @@ class HTMLHandler:
             return url
 
         if self.special_protocols.match(url):
+            return url
+
+        if self._should_skip_url(url):
             return url
 
         if not url.startswith(('http://', 'https://')):

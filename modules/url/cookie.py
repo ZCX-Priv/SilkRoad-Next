@@ -4,7 +4,7 @@ Cookie处理器
 """
 import re
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 
 class CookieHandler:
@@ -135,7 +135,7 @@ class CookieHandler:
             return None
         
         try:
-            parsed = urlparse(url)
+            parsed = urlsplit(url)
             domain = parsed.netloc
             
             if ':' in domain:

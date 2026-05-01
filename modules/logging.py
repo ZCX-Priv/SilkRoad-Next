@@ -11,6 +11,42 @@ from loguru import logger
 LoggerType = Union['Logger', object]
 
 
+class LoggerOptWrapper:
+    """
+    Logger 选项包装器
+    
+    用于支持 opt() 方法的链式调用，如 logger.opt(exception=True).error(...)
+    """
+    
+    def __init__(self, logger_instance, exception: bool = False):
+        self._logger = logger_instance
+        self._exception = exception
+    
+    def info(self, message: str):
+        if self._exception:
+            self._logger.opt(exception=True).info(message)
+        else:
+            self._logger.info(message)
+    
+    def debug(self, message: str):
+        if self._exception:
+            self._logger.opt(exception=True).debug(message)
+        else:
+            self._logger.debug(message)
+    
+    def warning(self, message: str):
+        if self._exception:
+            self._logger.opt(exception=True).warning(message)
+        else:
+            self._logger.warning(message)
+    
+    def error(self, message: str):
+        if self._exception:
+            self._logger.opt(exception=True).error(message)
+        else:
+            self._logger.error(message)
+
+
 class Logger:
     """
     日志管理类
@@ -154,18 +190,33 @@ class Logger:
         """
         logger.warning(message)
     
-    def error(self, message: str, exception: Optional[Exception] = None):
+    def error(self, message: str, exception: Optional[Exception] = None, exc_info: bool = False):
         """
         记录 ERROR 级别日志
         
         Args:
             message: 日志消息
             exception: 可选的异常对象，如果提供则会记录异常堆栈
+            exc_info: 兼容标准库 logging 的参数，如果为 True 则记录异常堆栈
         """
-        if exception:
-            logger.error(message, exception=exception)
+        if exception or exc_info:
+            logger.opt(exception=True).error(message)
         else:
             logger.error(message)
+    
+    def opt(self, exception: bool = False):
+        """
+        返回带有选项的 logger 包装器
+        
+        兼容 loguru 的 opt() 方法，用于控制日志行为
+        
+        Args:
+            exception: 是否包含异常堆栈
+            
+        Returns:
+            LoggerOptWrapper: 包装器对象，支持链式调用
+        """
+        return LoggerOptWrapper(logger, exception)
     
     async def close(self):
         """

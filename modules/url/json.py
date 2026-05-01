@@ -5,7 +5,7 @@ JSON内容处理器
 import re
 import json
 from typing import Dict, Any, Union
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 
 class JSONHandler:
@@ -71,19 +71,28 @@ class JSONHandler:
         Args:
             json_str: JSON文本内容
             base_url: 基础URL，用于补全相对URL
-            config: 配置字典
+            config: 配置字典，包含以下可选配置：
+                - urlRewrite.enabled: 是否启用URL重写
+                - urlRewrite.skipDomains: 跳过的域名列表
+                - urlRewrite.customRules: 自定义URL重写规则
 
         Returns:
             重写后的JSON文本
         """
+        url_rewrite_config = config.get('urlRewrite', {})
+        
+        if not url_rewrite_config.get('enabled', True):
+            return json_str
+        
+        self.skip_domains = url_rewrite_config.get('skipDomains', [])
+        self.custom_rules = url_rewrite_config.get('customRules', {})
+        
         try:
-            # 尝试解析JSON并进行深度处理
             data = json.loads(json_str)
             rewritten_data = await self._rewrite_json_object(data, base_url)
             return json.dumps(rewritten_data, ensure_ascii=False, indent=None)
 
         except (json.JSONDecodeError, TypeError):
-            # JSON解析失败，使用正则表达式处理
             return await self._rewrite_with_regex(json_str, base_url)
 
     async def _rewrite_json_object(
@@ -151,7 +160,7 @@ class JSONHandler:
 
             # 如果是协议相对URL，补全协议
             if protocol is None or protocol == '':
-                parsed_base = urlparse(base_url)
+                parsed_base = urlsplit(base_url)
                 url = f"{parsed_base.scheme}:{url}"
 
             # 重写URL
@@ -169,7 +178,7 @@ class JSONHandler:
 
             # 如果是协议相对URL，补全协议
             if protocol is None or protocol == '':
-                parsed_base = urlparse(base_url)
+                parsed_base = urlsplit(base_url)
                 url = f"{parsed_base.scheme}:{url}"
 
             # 重写URL
@@ -179,8 +188,8 @@ class JSONHandler:
         # 先处理键值对
         json_str = self.url_string_pattern.sub(replace_key_value, json_str)
 
-        # 再处理数组中的URL（避免重复处理）
-        # 这里需要更精确的模式来避免处理已经处理过的
+        # 再处理数组中的URL
+        json_str = self.url_array_pattern.sub(replace_array_item, json_str)
 
         return json_str
 
@@ -234,13 +243,22 @@ class JSONHandler:
         Returns:
             True表示跳过，False表示需要重写
         """
-        # 跳过特殊协议
         if self.special_protocols.match(url):
             return True
 
-        # 跳过已经是代理URL的
         if self.proxy_url_pattern.match(url):
             return True
+
+        skip_domains = getattr(self, 'skip_domains', [])
+        if skip_domains:
+            try:
+                parsed = urlsplit(url if url.startswith('http') else f'http://{url}')
+                domain = parsed.netloc.lower()
+                for skip_domain in skip_domains:
+                    if domain == skip_domain.lower() or domain.endswith('.' + skip_domain.lower()):
+                        return True
+            except Exception:
+                pass
 
         return False
 
@@ -263,8 +281,11 @@ class JSONHandler:
         if self.special_protocols.match(url):
             return url
 
+        if self._should_skip_url(url):
+            return url
+
         if not url.startswith(('http://', 'https://')):
-            parsed_base = urlparse(base_url)
+            parsed_base = urlsplit(base_url)
             scheme = parsed_base.scheme
             netloc = parsed_base.netloc
             base_path = parsed_base.path
@@ -299,7 +320,7 @@ class JSONHandler:
             代理URL格式: /domain/path?query#fragment
         """
         try:
-            parsed = urlparse(target_url)
+            parsed = urlsplit(target_url)
 
             # 构建代理路径
             # 格式: /domain/path?query#fragment

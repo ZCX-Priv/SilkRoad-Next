@@ -20,7 +20,7 @@ from typing import Optional, Dict, Any, List, TYPE_CHECKING
 from enum import Enum
 from dataclasses import dataclass, field
 from collections import deque
-import logging
+from loguru import logger as loguru_logger
 import uuid
 
 from modules.wafpasser import WAFPasser, RequestObfuscator
@@ -80,7 +80,7 @@ class TrafficController:
             logger: 日志记录器
         """
         self.config = config
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or loguru_logger
         
         self.max_bandwidth = config.get('trafficControl.maxBandwidth', 104857600)
         self.max_connections = config.get('trafficControl.maxConnections', 5000)
@@ -463,7 +463,7 @@ class BandwidthManager:
             logger: 日志记录器
         """
         self.max_bandwidth = max_bandwidth
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or loguru_logger
         
         self._current_usage = 0
         self._last_update = time.time()

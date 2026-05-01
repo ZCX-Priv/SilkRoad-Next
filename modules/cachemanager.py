@@ -99,7 +99,7 @@ class CacheManager:
             logger.warning(f"计算磁盘缓存大小失败: {e}")
             self._current_disk_size = 0
     
-    def _generate_cache_key(self, url: str, method: str = 'GET', headers: dict = None) -> str:
+    def _generate_cache_key(self, url: str, method: str = 'GET', headers: Optional[Dict] = None) -> str:
         """
         生成缓存键
         
@@ -131,7 +131,7 @@ class CacheManager:
     async def get(self, 
                  url: str, 
                  method: str = 'GET', 
-                 headers: dict = None) -> Optional[bytes]:
+                 headers: Optional[Dict] = None) -> Optional[bytes]:
         """
         从缓存获取数据
         
@@ -185,7 +185,7 @@ class CacheManager:
                  url: str,
                  data: bytes,
                  method: str = 'GET',
-                 headers: dict = None,
+                 headers: Optional[Dict] = None,
                  ttl: Optional[int] = None,
                  cache_to_disk: bool = True):
         """
@@ -368,7 +368,7 @@ class CacheManager:
         if not lru_keys:
             return False
         
-        lru_key = min(lru_keys, key=lru_keys.get)
+        lru_key = min(lru_keys.keys(), key=lambda k: lru_keys[k])
         
         # 删除缓存
         await self._delete_from_memory(lru_key)
@@ -474,7 +474,7 @@ class CacheManager:
         except Exception as e:
             logger.warning(f"删除磁盘缓存失败: {e}")
     
-    async def delete(self, url: str, method: str = 'GET', headers: dict = None):
+    async def delete(self, url: str, method: str = 'GET', headers: Optional[Dict] = None):
         """
         删除指定 URL 的缓存
         
@@ -605,7 +605,7 @@ class CacheManager:
             'total_requests': total_requests
         }
     
-    async def get_cache_info(self, url: str, method: str = 'GET', headers: dict = None) -> Optional[dict]:
+    async def get_cache_info(self, url: str, method: str = 'GET', headers: Optional[Dict] = None) -> Optional[Dict]:
         """
         获取指定 URL 的缓存信息
         

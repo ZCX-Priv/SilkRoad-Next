@@ -4,7 +4,7 @@ CSS内容处理器
 """
 import re
 from typing import Dict, Any
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 
 class CSSHandler:
@@ -53,11 +53,22 @@ class CSSHandler:
         Args:
             css: CSS文本内容
             base_url: 基础URL，用于补全相对URL
-            config: 配置字典
+            config: 配置字典，包含以下可选配置：
+                - urlRewrite.enabled: 是否启用URL重写
+                - urlRewrite.skipDomains: 跳过的域名列表
+                - urlRewrite.customRules: 自定义URL重写规则
 
         Returns:
             重写后的CSS文本
         """
+        url_rewrite_config = config.get('urlRewrite', {})
+        
+        if not url_rewrite_config.get('enabled', True):
+            return css
+        
+        self.skip_domains = url_rewrite_config.get('skipDomains', [])
+        self.custom_rules = url_rewrite_config.get('customRules', {})
+        
         # 1. 处理@import语句
         css = await self._rewrite_imports(css, base_url)
 
@@ -106,6 +117,32 @@ class CSSHandler:
 
         return self.url_pattern.sub(replace_url, css)
 
+    def _should_skip_url(self, url: str) -> bool:
+        """
+        判断是否应该跳过URL重写
+
+        Args:
+            url: URL字符串
+
+        Returns:
+            True表示跳过，False表示需要重写
+        """
+        if self.special_protocols.match(url):
+            return True
+
+        skip_domains = getattr(self, 'skip_domains', [])
+        if skip_domains:
+            try:
+                parsed = urlsplit(url if url.startswith('http') else f'http://{url}')
+                domain = parsed.netloc.lower()
+                for skip_domain in skip_domains:
+                    if domain == skip_domain.lower() or domain.endswith('.' + skip_domain.lower()):
+                        return True
+            except Exception:
+                pass
+
+        return False
+
     def _rewrite_single_url(self, url: str, base_url: str) -> str:
         """
         重写单个URL
@@ -125,8 +162,11 @@ class CSSHandler:
         if self.special_protocols.match(url):
             return url
 
+        if self._should_skip_url(url):
+            return url
+
         if not url.startswith(('http://', 'https://')):
-            parsed_base = urlparse(base_url)
+            parsed_base = urlsplit(base_url)
             scheme = parsed_base.scheme
             netloc = parsed_base.netloc
             base_path = parsed_base.path
@@ -161,7 +201,7 @@ class CSSHandler:
             代理URL格式: /domain/path?query#fragment
         """
         try:
-            parsed = urlparse(target_url)
+            parsed = urlsplit(target_url)
 
             # 构建代理路径
             # 格式: /domain/path?query#fragment

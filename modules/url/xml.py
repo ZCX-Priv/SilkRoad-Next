@@ -4,7 +4,7 @@ XML内容处理器
 """
 import re
 from typing import Dict, Any
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 
 class XMLHandler:
@@ -21,31 +21,20 @@ class XMLHandler:
         """
         预编译所有正则表达式，提升性能
         """
-        # XML属性中的URL模式
-        # 匹配: attr="http://..." 或 attr='http://...'
         self.attribute_url_pattern = re.compile(
             r'(\w+)\s*=\s*(["\'])(https?://[^"\']+)\2',
             re.IGNORECASE
         )
 
-        # XML命名空间声明中的URL（通常不应重写）
-        self.namespace_pattern = re.compile(
-            r'(xmlns(?::\w+)?)\s*=\s*(["\'])([^"\']+)\2',
-            re.IGNORECASE
-        )
-
-        # 特殊协议模式（这些协议的URL不应被重写）
         self.special_protocols = re.compile(
             r'^(javascript:|data:|blob:)',
             re.IGNORECASE
         )
 
-        # 空URL或仅空白字符
         self.empty_url_pattern = re.compile(
             r'^\s*$'
         )
 
-        # 已经是代理URL的模式（避免重复处理）
         self.proxy_url_pattern = re.compile(
             r'^\/[^\/]+\/',
             re.IGNORECASE
@@ -58,12 +47,22 @@ class XMLHandler:
         Args:
             xml: XML文本内容
             base_url: 基础URL，用于补全相对URL
-            config: 配置字典
+            config: 配置字典，包含以下可选配置：
+                - urlRewrite.enabled: 是否启用URL重写
+                - urlRewrite.skipDomains: 跳过的域名列表
+                - urlRewrite.customRules: 自定义URL重写规则
 
         Returns:
             重写后的XML文本
         """
-        # 1. 处理属性中的URL
+        url_rewrite_config = config.get('urlRewrite', {})
+        
+        if not url_rewrite_config.get('enabled', True):
+            return xml
+        
+        self.skip_domains = url_rewrite_config.get('skipDomains', [])
+        self.custom_rules = url_rewrite_config.get('customRules', {})
+        
         xml = await self._rewrite_attribute_urls(xml, base_url)
 
         return xml
@@ -110,13 +109,22 @@ class XMLHandler:
         Returns:
             True表示跳过，False表示需要重写
         """
-        # 跳过特殊协议
         if self.special_protocols.match(url):
             return True
 
-        # 跳过已经是代理URL的
         if self.proxy_url_pattern.match(url):
             return True
+
+        skip_domains = getattr(self, 'skip_domains', [])
+        if skip_domains:
+            try:
+                parsed = urlsplit(url if url.startswith('http') else f'http://{url}')
+                domain = parsed.netloc.lower()
+                for skip_domain in skip_domains:
+                    if domain == skip_domain.lower() or domain.endswith('.' + skip_domain.lower()):
+                        return True
+            except Exception:
+                pass
 
         return False
 
@@ -140,7 +148,7 @@ class XMLHandler:
             return url
 
         if not url.startswith(('http://', 'https://')):
-            parsed_base = urlparse(base_url)
+            parsed_base = urlsplit(base_url)
             scheme = parsed_base.scheme
             netloc = parsed_base.netloc
             base_path = parsed_base.path
@@ -175,7 +183,7 @@ class XMLHandler:
             代理URL格式: /domain/path?query#fragment
         """
         try:
-            parsed = urlparse(target_url)
+            parsed = urlsplit(target_url)
 
             # 构建代理路径
             # 格式: /domain/path?query#fragment

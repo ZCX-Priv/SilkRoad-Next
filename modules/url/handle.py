@@ -5,7 +5,7 @@ URL处理入口模块
 import re
 import chardet
 from typing import Optional, Dict, Any
-from urllib.parse import urlparse
+from loguru import logger as loguru_logger
 
 from .html import HTMLHandler
 from .css import CSSHandler
@@ -30,7 +30,7 @@ class URLHandler:
             logger: 日志记录器实例
         """
         self.config = config
-        self.logger = logger
+        self.logger = logger or loguru_logger
 
         # 初始化各种内容类型的处理器
         self.handlers = {
@@ -55,18 +55,6 @@ class URLHandler:
         """
         预编译所有正则表达式，提升性能
         """
-        # 绝对URL模式
-        self.absolute_url_pattern = re.compile(
-            r'https?://[^\s<>"\'\)]+',
-            re.IGNORECASE
-        )
-
-        # 相对URL模式（用于检测）
-        self.relative_url_pattern = re.compile(
-            r'(href|src|action)=["\']([^"\']+)["\']',
-            re.IGNORECASE
-        )
-
         # Content-Type中的charset提取模式
         self.charset_pattern = re.compile(
             r'charset=["\']?([^"\'\s;]+)',
@@ -144,6 +132,19 @@ class URLHandler:
             重写后的Location URL
         """
         return self.location_handler.rewrite(location, base_url)
+
+    def rewrite_content_location_header(self, content_location: str, base_url: str) -> str:
+        """
+        重写Content-Location响应头中的URL
+
+        Args:
+            content_location: Content-Location头的值
+            base_url: 基础URL
+
+        Returns:
+            重写后的Content-Location URL
+        """
+        return self.location_handler.rewrite_content_location(content_location, base_url)
 
     def _detect_encoding(self, content: bytes, content_type: str) -> str:
         """

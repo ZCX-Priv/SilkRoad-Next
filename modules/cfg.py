@@ -4,11 +4,12 @@
 负责加载、解析和管理全局配置，支持：
 - JSON 格式配置文件读取
 - 默认配置回退
-- 配置热重载（V2 功能预留接口）
+- 配置热重载
 - 配置项验证
+- 配置文件变更监听
 
 Author: SilkRoad-Next Team
-Version: 1.0.0
+Version: 2.0.0
 """
 
 import asyncio
@@ -16,6 +17,16 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Callable, Optional
+
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler, FileModifiedEvent
+    WATCHDOG_AVAILABLE = True
+except ImportError:
+    WATCHDOG_AVAILABLE = False
+    Observer = None
+    FileSystemEventHandler = object
+    FileModifiedEvent = None
 
 
 class ConfigError(Exception):
@@ -33,7 +44,9 @@ class ConfigManager:
         config_path (str): 配置文件路径
         config (Dict[str, Any]): 当前配置字典
         default_config (Dict[str, Any]): 默认配置字典
-        _callbacks (List[Callable]): 配置变更回调函数列表（预留热重载接口）
+        _callbacks (List[Callable]): 配置变更回调函数列表
+        _observer (Observer): 文件监听器（可选）
+        _event_loop: asyncio 事件循环引用
     """
 
     def __init__(self, config_path: str = "databases/config.json"):
@@ -47,6 +60,8 @@ class ConfigManager:
         self.config: Dict[str, Any] = {}
         self.default_config = self._get_default_config()
         self._callbacks: List[Callable] = []
+        self._observer: Optional[Any] = None
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
 
     async def load(self) -> None:
         """
@@ -216,7 +231,10 @@ class ConfigManager:
                 "enabled": False,
                 "maxSize": 1073741824,
                 "defaultTTL": 3600,
-                "cleanupInterval": 300
+                "cleanupInterval": 300,
+                "warmupOnStart": False,
+                "warmupUrls": [],
+                "warmupTTL": 7200
             },
             "security": {
                 "rateLimit": {
@@ -460,30 +478,56 @@ class ConfigManager:
                 # 记录错误但不中断其他回调
                 print(f"配置变更回调执行失败: {e}")
 
-    def set(self, key: str, value: Any) -> None:
+    def set(self, key: str, value: Any, save: bool = False) -> None:
         """
         设置配置项（运行时修改）
-
-        注意：此方法仅修改内存中的配置，不会保存到文件。
 
         Args:
             key: 配置项键名，支持点分隔符
             value: 配置项值
+            save: 是否立即保存到文件，默认为 False
 
         Examples:
             >>> config.set('server.proxy.port', 9090)
+            >>> config.set('server.proxy.port', 9090, save=True)  # 同时保存到文件
+
+        Raises:
+            ConfigError: 保存配置文件失败
         """
         keys = key.split('.')
         config_dict = self.config
 
-        # 逐层创建嵌套字典
         for k in keys[:-1]:
             if k not in config_dict:
                 config_dict[k] = {}
             config_dict = config_dict[k]
 
-        # 设置最终值
         config_dict[keys[-1]] = value
+
+        if save:
+            asyncio.create_task(self._save_config())
+
+    async def _save_config(self) -> None:
+        """
+        保存配置到文件
+
+        Raises:
+            ConfigError: 保存配置文件失败
+        """
+        try:
+            config_dir = os.path.dirname(self.config_path)
+            if config_dir:
+                os.makedirs(config_dir, exist_ok=True)
+
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=2, ensure_ascii=False)
+
+        except PermissionError:
+            raise ConfigError(f"无权限保存配置文件: {self.config_path}")
+        except OSError as e:
+            raise ConfigError(f"保存配置文件失败: {e}")
+        except Exception as e:
+            raise ConfigError(f"保存配置失败: {e}")
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -497,4 +541,74 @@ class ConfigManager:
     def __repr__(self) -> str:
         """返回配置管理器的字符串表示"""
         return f"ConfigManager(config_path='{self.config_path}', loaded={bool(self.config)})"
+    
+    def start_watching(self) -> bool:
+        """
+        启动配置文件监听
+
+        Returns:
+            bool: 是否成功启动监听
+        """
+        if not WATCHDOG_AVAILABLE:
+            print("[警告] watchdog 库未安装，配置文件监听功能不可用")
+            return False
+        
+        if self._observer is not None:
+            return True
+        
+        try:
+            self._event_loop = asyncio.get_event_loop()
+            
+            class ConfigFileHandler(FileSystemEventHandler if WATCHDOG_AVAILABLE else object):
+                def __init__(handler, config_manager: ConfigManager):
+                    handler.config_manager = config_manager
+                    handler._last_modified = 0
+                
+                def on_modified(handler, event):
+                    if event.src_path.endswith('config.json'):
+                        import time
+                        current_time = time.time()
+                        
+                        if current_time - handler._last_modified < 1.0:
+                            return
+                        
+                        handler._last_modified = current_time
+                        
+                        if handler.config_manager._event_loop:
+                            handler.config_manager._event_loop.call_soon_threadsafe(
+                                lambda: asyncio.create_task(handler.config_manager._on_file_changed())
+                            )
+            
+            self._observer = Observer()
+            config_dir = os.path.dirname(self.config_path)
+            if not config_dir:
+                config_dir = '.'
+            
+            self._observer.schedule(
+                ConfigFileHandler(self),
+                config_dir,
+                recursive=False
+            )
+            self._observer.start()
+            
+            return True
+            
+        except Exception as e:
+            print(f"[错误] 启动配置文件监听失败: {e}")
+            return False
+    
+    def stop_watching(self) -> None:
+        """停止配置文件监听"""
+        if self._observer is not None:
+            self._observer.stop()
+            self._observer.join()
+            self._observer = None
+    
+    async def _on_file_changed(self) -> None:
+        """配置文件变更回调"""
+        try:
+            print("[信息] 检测到配置文件变更，开始重新加载...")
+            await self.reload()
+        except Exception as e:
+            print(f"[错误] 配置文件变更处理失败: {e}")
 

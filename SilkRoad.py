@@ -158,6 +158,16 @@ class SilkRoad:
             print("[2/14] 初始化日志系统...")
             self.logger = Logger(self.config)
             self.logger.info("配置加载完成")
+            
+            # 注册配置热重载回调
+            self.config.register_callback(self._on_config_reload)
+            self.logger.info("配置热重载回调已注册")
+            
+            # 启动配置文件监听
+            if self.config.start_watching():
+                self.logger.info("配置文件监听已启动")
+            else:
+                self.logger.warning("配置文件监听未启动（可能未安装 watchdog 库）")
 
             # ========== V2 初始化 ==========
             # 3. 初始化连接池
@@ -200,6 +210,13 @@ class SilkRoad:
                     default_ttl=self.config.get('cache.defaultTTL', 3600)
                 )
                 asyncio.create_task(self._cache_cleanup_task())
+                
+                if self.config.get('cache.warmupOnStart', False):
+                    warmup_urls = self.config.get('cache.warmupUrls', [])
+                    if warmup_urls:
+                        asyncio.create_task(self._cache_warmup_task(warmup_urls))
+                        self.logger.info(f"缓存预热任务已安排，共 {len(warmup_urls)} 个 URL")
+                
                 self.logger.info("缓存管理器已启用")
 
             # 7. 初始化黑名单管理器
@@ -207,9 +224,16 @@ class SilkRoad:
             if self.config.get('v2.blacklist.enabled', False):
                 from modules.blacklist import BlacklistManager
                 self.blacklist_manager = BlacklistManager(
-                    config_file=self.config.get('v2.blacklist.configFile', 'databases/blacklist.json')
+                    config_file=self.config.get('v2.blacklist.configFile', 'databases/blacklist.json'),
+                    auto_reload=self.config.get('v2.blacklist.autoReload', False),
+                    reload_interval=self.config.get('v2.blacklist.reloadInterval', 300)
                 )
-                self.logger.info("黑名单管理器已启用")
+                await self.blacklist_manager.load_config()
+                if self.config.get('v2.blacklist.autoReload', False):
+                    await self.blacklist_manager.start_auto_reload()
+                    self.logger.info(f"黑名单管理器已启用（自动重载间隔: {self.config.get('v2.blacklist.reloadInterval', 300)}秒）")
+                else:
+                    self.logger.info("黑名单管理器已启用")
 
             # 8. 初始化脚本注入器
             print("[8/14] 初始化脚本注入器...")
@@ -385,7 +409,8 @@ class SilkRoad:
 
             tasks = [
                 asyncio.create_task(self.proxy_server.start()),
-                asyncio.create_task(self.wait_for_shutdown())
+                asyncio.create_task(self.wait_for_shutdown()),
+                asyncio.create_task(self._periodic_stats_report())
             ]
 
             self.logger.info("所有服务已启动，开始处理请求...")
@@ -407,6 +432,94 @@ class SilkRoad:
             else:
                 print(f"[错误] 服务启动失败: {e}")
             raise
+
+    async def _periodic_stats_report(self) -> None:
+        """
+        定期统计报告任务
+        
+        每隔一定时间输出流处理器的统计信息，用于监控和分析。
+        报告间隔由配置文件中的 stream.rateLimit.monitoringInterval 控制。
+        """
+        if not self.logger:
+            return
+        
+        monitoring_interval = self.config.get('stream.rateLimit.monitoringInterval', 60)
+        
+        self.logger.info(f"定期统计报告已启动，间隔: {monitoring_interval} 秒")
+        
+        while not self.shutdown_event.is_set():
+            try:
+                await asyncio.sleep(monitoring_interval)
+                
+                if self.shutdown_event.is_set():
+                    break
+                
+                if not self.proxy_server:
+                    continue
+                
+                report_lines = []
+                report_lines.append("=" * 60)
+                report_lines.append("流处理器统计报告")
+                report_lines.append("=" * 60)
+                
+                if self.stream_handler:
+                    stats = self.stream_handler.get_stats()
+                    report_lines.append(
+                        f"StreamHandler: 总流数={stats.get('total_streams', 0)} | "
+                        f"活跃流数={stats.get('active_streams', 0)} | "
+                        f"媒体流={stats.get('media_streams', 0)} | "
+                        f"SSE流={stats.get('sse_streams', 0)} | "
+                        f"传输字节={stats.get('bytes_transferred', 0)} | "
+                        f"错误={stats.get('errors', 0)}"
+                    )
+                
+                if self.others_handler:
+                    stats = self.others_handler.get_stats()
+                    report_lines.append(
+                        f"OthersHandler: 总流数={stats.get('total_streams', 0)} | "
+                        f"分块流={stats.get('chunked_streams', 0)} | "
+                        f"Multipart流={stats.get('multipart_streams', 0)} | "
+                        f"传输字节={stats.get('bytes_transferred', 0)} | "
+                        f"流量整形次数={stats.get('rate_limited', 0)} | "
+                        f"错误={stats.get('errors', 0)}"
+                    )
+                    
+                    if stats.get('enable_rate_limit'):
+                        report_lines.append(
+                            f"流量整形: 已启用 | "
+                            f"最大速率={stats.get('max_rate', 0)} bytes/s"
+                        )
+                    else:
+                        report_lines.append("流量整形: 未启用")
+                
+                if self.media_handler:
+                    stats = self.media_handler.get_stats()
+                    report_lines.append(
+                        f"MediaHandler: 总流数={stats.get('total_streams', 0)} | "
+                        f"传输字节={stats.get('bytes_transferred', 0)} | "
+                        f"错误={stats.get('errors', 0)}"
+                    )
+                
+                if self.sse_handler:
+                    stats = self.sse_handler.get_stats()
+                    report_lines.append(
+                        f"SSEHandler: 总连接数={stats.get('total_connections', 0)} | "
+                        f"活跃连接数={stats.get('active_connections', 0)} | "
+                        f"事件数={stats.get('events_sent', 0)} | "
+                        f"错误={stats.get('errors', 0)}"
+                    )
+                
+                report_lines.append("=" * 60)
+                
+                for line in report_lines:
+                    self.logger.info(line)
+                
+            except asyncio.CancelledError:
+                self.logger.info("定期统计报告任务已取消")
+                break
+            except Exception as e:
+                self.logger.error(f"生成统计报告时发生错误: {e}")
+                await asyncio.sleep(10)
 
     async def wait_for_shutdown(self) -> None:
         """
@@ -434,10 +547,14 @@ class SilkRoad:
         self.logger.info("=" * 60)
 
         try:
+            # 停止配置文件监听
+            self.config.stop_watching()
+            self.logger.info("[0/12] 配置文件监听已停止")
+            
             # ========== 关闭 V4 模块 ==========
             # 1. 关闭 WebSocket 连接
             if self.websocket_handler:
-                self.logger.info("[1/10] 关闭 WebSocket 连接...")
+                self.logger.info("[1/12] 关闭 WebSocket 连接...")
                 connections = await self.websocket_handler.get_active_connections()
                 for conn in connections:
                     await self.websocket_handler.close_connection(conn.connection_id)
@@ -445,56 +562,68 @@ class SilkRoad:
 
             # 2. 停止流量控制器
             if self.traffic_controller:
-                self.logger.info("[2/10] 停止流量控制器...")
+                self.logger.info("[2/12] 停止流量控制器...")
                 # 流量控制器无需特殊关闭
 
             # ========== 关闭 V5 模块 ==========
             # 3. 关闭 WAF 穿透模块
             if self.waf_passer:
-                self.logger.info("[3/10] 关闭 WAF 穿透模块...")
+                self.logger.info("[3/12] 关闭 WAF 穿透模块...")
                 # WAF 穿透模块无需特殊关闭，清理引用即可
                 self.waf_passer = None
                 self.waf_detector = None
                 self.logger.info("WAF 穿透模块已关闭")
 
             # ========== 关闭 V3 模块 ==========
-            # 4. 关闭流处理器
+            # 4. 关闭 SSE 连接
+            if self.sse_handler:
+                self.logger.info("[4/12] 关闭 SSE 连接...")
+                sse_connections = await self.sse_handler.get_active_connections()
+                sse_count = await self.sse_handler.close_all_connections()
+                self.logger.info(f"已关闭 {sse_count} 个 SSE 连接")
+
+            # 5. 关闭流处理器
             if self.stream_handler:
-                self.logger.info("[4/10] 关闭流处理器...")
-                active_streams = await self.stream_handler.get_active_streams()
-                for stream_id in active_streams:
-                    await self.stream_handler.close_stream(stream_id)
-                self.logger.info(f"已关闭 {len(active_streams)} 个活跃流")
+                self.logger.info("[5/12] 关闭流处理器...")
+                count = await self.stream_handler.close_all_streams()
+                self.logger.info(f"已关闭 {count} 个活跃流")
 
             # ========== 关闭 V2 模块 ==========
-            # 5. 关闭连接池
+            # 6. 关闭连接池
             if self.connection_pool:
-                self.logger.info("[5/10] 关闭连接池...")
+                self.logger.info("[6/12] 关闭连接池...")
                 await self.connection_pool.close_all()
 
-            # 6. 关闭线程池
+            # 7. 关闭线程池
             if self.thread_pool:
-                self.logger.info("[6/10] 关闭线程池...")
+                self.logger.info("[7/12] 关闭线程池...")
                 self.thread_pool.shutdown()
 
-            # 7. 保存会话数据
+            # 8. 保存会话数据
             if self.session_manager:
-                self.logger.info("[7/10] 保存会话数据...")
+                self.logger.info("[8/12] 保存会话数据...")
                 await self.session_manager.save_to_file('sessions_backup.json')
 
-            # 8. 清理缓存
+            # 9. 清理缓存
             if self.cache_manager:
-                self.logger.info("[8/10] 清理缓存...")
+                self.logger.info("[9/12] 清理缓存...")
                 await self.cache_manager.clear_all()
 
             # ========== 关闭 V1 模块 ==========
-            # 9. 停止代理服务器
+            # 10. 清理 SSE 缓存
+            if self.sse_handler:
+                self.logger.info("[10/12] 清理 SSE 缓存...")
+                for stream_id in list((await self.sse_handler.get_active_connections()).keys()):
+                    await self.sse_handler.clear_cache(stream_id)
+                self.logger.info("SSE 缓存已清理")
+
+            # 11. 停止代理服务器
             if self.proxy_server:
-                self.logger.info("[9/10] 停止代理服务器...")
+                self.logger.info("[11/12] 停止代理服务器...")
                 await self.proxy_server.stop()
 
-            # 10. 关闭日志系统
-            self.logger.info("[10/10] 关闭日志系统...")
+            # 12. 关闭日志系统
+            self.logger.info("[12/12] 关闭日志系统...")
             await self.logger.close()
 
             print()
@@ -509,6 +638,58 @@ class SilkRoad:
             else:
                 print(f"[错误] 关闭过程中发生错误: {e}")
 
+    async def _on_config_reload(self) -> None:
+        """
+        配置热重载回调函数
+        
+        当配置文件发生变化并重新加载后，此函数将被调用。
+        用于应用新的配置到各个模块。
+        """
+        try:
+            if not self.logger:
+                return
+            
+            self.logger.info("=" * 60)
+            self.logger.info("开始应用新配置...")
+            self.logger.info("=" * 60)
+            
+            # 更新日志级别
+            log_level = self.config.get('logging.level', 'INFO')
+            if hasattr(self.logger, 'set_level'):
+                self.logger.set_level(log_level)
+                self.logger.info(f"日志级别已更新: {log_level}")
+            
+            # 更新缓存配置
+            if self.cache_manager:
+                max_size = self.config.get('cache.maxSize', 1073741824)
+                default_ttl = self.config.get('cache.defaultTTL', 3600)
+                self.logger.info(f"缓存配置已更新: maxSize={max_size}, defaultTTL={default_ttl}")
+            
+            # 更新连接池配置
+            if self.connection_pool:
+                max_pool_size = self.config.get('performance.connectionPool.maxPoolSize', 100)
+                keepalive_timeout = self.config.get('performance.connectionPool.keepaliveTimeout', 30)
+                self.logger.info(f"连接池配置已更新: maxPoolSize={max_pool_size}, keepaliveTimeout={keepalive_timeout}")
+            
+            # 更新线程池配置
+            if self.thread_pool:
+                max_workers = self.config.get('performance.threadPool.maxWorkers', 4)
+                self.logger.info(f"线程池配置已更新: maxWorkers={max_workers}")
+            
+            # 更新流量控制配置
+            if self.traffic_controller:
+                max_bandwidth = self.config.get('trafficControl.maxBandwidth', 104857600)
+                max_connections = self.config.get('trafficControl.maxConnections', 5000)
+                self.logger.info(f"流量控制配置已更新: maxBandwidth={max_bandwidth}, maxConnections={max_connections}")
+            
+            self.logger.info("=" * 60)
+            self.logger.info("配置热重载完成")
+            self.logger.info("=" * 60)
+            
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"配置热重载回调执行失败: {e}")
+
     async def _cache_cleanup_task(self):
         """
         定期清理缓存任务
@@ -518,23 +699,49 @@ class SilkRoad:
         """
         while True:
             try:
-                # 等待清理间隔
                 cleanup_interval = self.config.get('cache.cleanupInterval', 300)
                 await asyncio.sleep(cleanup_interval)
 
-                # 执行缓存清理
                 if self.cache_manager:
                     await self.cache_manager.cleanup_expired()
                     if self.logger:
                         self.logger.debug("缓存清理任务完成")
 
             except asyncio.CancelledError:
-                # 任务被取消，正常退出
                 break
             except Exception as e:
-                # 清理过程中发生错误，记录日志但继续运行
                 if self.logger:
                     self.logger.error(f"缓存清理任务失败: {e}")
+    
+    async def _cache_warmup_task(self, urls: list):
+        """
+        缓存预热任务
+
+        在服务启动后预加载热门资源到缓存中。
+
+        Args:
+            urls: 需要预热的 URL 列表
+        """
+        try:
+            await asyncio.sleep(5)
+            
+            if self.logger:
+                self.logger.info(f"开始缓存预热，共 {len(urls)} 个 URL")
+            
+            ttl = self.config.get('cache.warmupTTL', self.config.get('cache.defaultTTL', 3600))
+            
+            if self.cache_manager:
+                await self.cache_manager.warmup(urls, ttl=ttl)
+            
+            if self.logger:
+                self.logger.info("缓存预热完成")
+                
+        except asyncio.CancelledError:
+            if self.logger:
+                self.logger.info("缓存预热任务已取消")
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"缓存预热任务失败: {e}")
 
     def _display_startup_info(self) -> None:
         """

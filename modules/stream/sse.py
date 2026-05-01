@@ -16,7 +16,7 @@ import asyncio
 import aiohttp
 from typing import Optional, Dict, List, AsyncIterator, Any, TYPE_CHECKING
 import time
-import logging
+from loguru import logger as loguru_logger
 from dataclasses import dataclass, field
 
 from modules.stream import StreamContext
@@ -91,7 +91,7 @@ class SSEHandler:
             logger: 日志记录器，如果为 None 则使用默认 logger
         """
         self.config = config
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or loguru_logger
         
         # 配置参数
         self.heartbeat_interval = self._get_config('stream.sse.heartbeatInterval', 15)
@@ -163,9 +163,10 @@ class SSEHandler:
         这是 SSE 处理的主入口方法，负责：
         1. 检查连接数限制
         2. 发送 SSE 响应头
-        3. 启动心跳任务
-        4. 解析并转发 SSE 事件
-        5. 清理连接
+        3. 重连恢复（如果客户端发送了 Last-Event-ID）
+        4. 启动心跳任务
+        5. 解析并转发 SSE 事件
+        6. 清理连接
         
         Args:
             writer: 客户端写入器，用于向客户端发送数据
@@ -196,10 +197,36 @@ class SSEHandler:
         )
         
         heartbeat_task = None
+        recovered_events = 0
         
         try:
             # 发送 SSE 响应头
             await self._send_sse_headers(writer, response)
+            
+            # 检查是否为重连请求（Last-Event-ID）
+            request_headers = context.metadata.get('request_headers', {})
+            last_event_id = request_headers.get('Last-Event-ID') or request_headers.get('last-event-id')
+            
+            if last_event_id:
+                self.logger.info(
+                    f"SSE 重连恢复: {context.stream_id} | "
+                    f"Last-Event-ID={last_event_id}"
+                )
+                self.stats['reconnects'] += 1
+                
+                # 发送缓存的事件
+                cached_events = await self.get_cached_events(context.stream_id, last_event_id)
+                for event in cached_events:
+                    await self._forward_event(writer, event)
+                    recovered_events += 1
+                    self.stats['events_sent'] += 1
+                    context.bytes_transferred += len(event.data)
+                
+                if recovered_events > 0:
+                    self.logger.info(
+                        f"SSE 重连恢复完成: {context.stream_id} | "
+                        f"恢复事件数={recovered_events}"
+                    )
             
             # 启动心跳任务
             heartbeat_task = asyncio.create_task(
@@ -235,6 +262,7 @@ class SSEHandler:
             self.logger.info(
                 f"SSE 连接关闭: {context.stream_id} | "
                 f"发送事件数={event_count} | "
+                f"恢复事件数={recovered_events} | "
                 f"传输大小={context.bytes_transferred} bytes"
             )
             
@@ -247,7 +275,7 @@ class SSEHandler:
             self.stats['errors'] += 1
             
         except Exception as e:
-            self.logger.error(f"SSE 处理错误 [{context.stream_id}]: {e}", exc_info=True)
+            self.logger.opt(exception=True).error(f"SSE 处理错误 [{context.stream_id}]: {e}")
             self.stats['errors'] += 1
             raise
             

@@ -17,7 +17,7 @@ import asyncio
 import aiohttp
 import re
 import time
-import logging
+from loguru import logger as loguru_logger
 from typing import Optional, Dict, Any, TYPE_CHECKING
 from dataclasses import dataclass
 
@@ -80,7 +80,7 @@ class MediaHandler:
             logger: 日志记录器，如果为 None 则使用默认 logger
         """
         self.config = config
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or loguru_logger
         
         # 配置参数（使用安全的 get 方法，提供默认值）
         self.buffer_size = self._get_config('stream.media.bufferSize', 65536)
@@ -151,9 +151,11 @@ class MediaHandler:
         处理媒体流
         
         这是媒体流处理的主入口方法，负责：
-        1. 检查是否为 Range 请求
-        2. 路由到对应的处理方法
-        3. 更新统计信息
+        1. 检查缓存（仅对非 Range 请求）
+        2. 检查是否为 Range 请求
+        3. 路由到对应的处理方法
+        4. 更新统计信息
+        5. 缓存媒体内容（可选）
         
         Args:
             writer: 客户端写入器，用于向客户端发送数据
@@ -166,11 +168,38 @@ class MediaHandler:
         self.stats['total_media_streams'] += 1
         
         try:
-            # 检查是否为 Range 请求
             content_range = response.headers.get('Content-Range')
-            is_range_request = content_range is not None
+            is_range_response = content_range is not None
             
-            if is_range_request and self.enable_range:
+            cache_key = self._generate_cache_key(context.target_url)
+            
+            request_headers = context.metadata.get('request_headers', {})
+            client_range_header = request_headers.get('Range', '')
+            
+            if client_range_header and self.enable_range:
+                cached_content = await self.get_cached_content(cache_key)
+                if cached_content and 'content' in cached_content:
+                    total_size = len(cached_content['content'])
+                    range_info = self.parse_range_header(client_range_header, total_size)
+                    
+                    if range_info.is_valid:
+                        self.logger.info(
+                            f"从缓存处理客户端 Range 请求: {context.stream_id} | "
+                            f"Range: {range_info.start}-{range_info.end}/{range_info.total}"
+                        )
+                        await self._send_cached_range_response(
+                            writer, cached_content, range_info, context
+                        )
+                        return
+            
+            if not is_range_response and self._should_cache(response, context):
+                cached_content = await self.get_cached_content(cache_key)
+                if cached_content:
+                    self.logger.info(f"媒体缓存命中: {context.stream_id} | URL: {context.target_url}")
+                    await self._send_cached_response(writer, response, cached_content, context)
+                    return
+            
+            if is_range_response and self.enable_range:
                 self.stats['range_requests'] += 1
                 self.logger.debug(
                     f"处理 Range 请求: {context.stream_id} | "
@@ -179,19 +208,18 @@ class MediaHandler:
                 await self._handle_range_response(writer, response, context)
             else:
                 self.stats['normal_requests'] += 1
-                await self._handle_normal_response(writer, response, context)
+                await self._handle_normal_response(writer, response, context, cache_key if not is_range_response else None)
             
-            # 记录完成信息
             duration = time.time() - context.start_time
             self.logger.info(
                 f"媒体流处理完成: {context.stream_id} | "
-                f"类型={'Range' if is_range_request else 'Normal'} | "
+                f"类型={'Range' if is_range_response else 'Normal'} | "
                 f"大小={context.bytes_transferred} bytes | "
                 f"耗时={duration:.2f}s"
             )
             
         except Exception as e:
-            self.logger.error(f"媒体流处理错误 [{context.stream_id}]: {e}", exc_info=True)
+            self.logger.opt(exception=True).error(f"媒体流处理错误 [{context.stream_id}]: {e}")
             self.stats['errors'] += 1
             raise
     
@@ -238,25 +266,26 @@ class MediaHandler:
     async def _handle_normal_response(self,
                                      writer: asyncio.StreamWriter,
                                      response: aiohttp.ClientResponse,
-                                     context: StreamContext) -> None:
+                                     context: StreamContext,
+                                     cache_key: Optional[str] = None) -> None:
         """
         处理普通媒体响应
         
         发送 200 OK 响应头，并流式传输数据。
+        如果提供了 cache_key，会在传输过程中收集数据并缓存。
         
         Args:
             writer: 客户端写入器
             response: 目标服务器响应
             context: 流上下文
+            cache_key: 缓存键（可选），如果提供则缓存内容
             
         Raises:
             Exception: 处理过程中的错误
         """
-        # 发送响应头
         await self._send_normal_headers(writer, response)
         
-        # 流式传输数据
-        await self._stream_content(writer, response, context)
+        await self._stream_content(writer, response, context, cache_key)
     
     async def _send_range_headers(self,
                                  writer: asyncio.StreamWriter,
@@ -356,11 +385,13 @@ class MediaHandler:
     async def _stream_content(self,
                              writer: asyncio.StreamWriter,
                              response: aiohttp.ClientResponse,
-                             context: StreamContext) -> None:
+                             context: StreamContext,
+                             cache_key: Optional[str] = None) -> None:
         """
         流式传输内容
         
         使用自适应缓冲策略流式传输数据，支持流量控制和进度监控。
+        如果提供了 cache_key，会在传输过程中收集数据用于缓存。
         
         缓冲策略：
         1. 数据首先写入缓冲区
@@ -371,26 +402,30 @@ class MediaHandler:
             writer: 客户端写入器
             response: 目标服务器响应
             context: 流上下文
+            cache_key: 缓存键（可选），如果提供则收集数据用于缓存
             
         Raises:
             Exception: 传输过程中的错误
         """
         buffer = bytearray()
         last_flush_time = time.time()
-        flush_interval = 0.1  # 100ms 刷新间隔
+        flush_interval = 0.1
         chunk_count = 0
+        
+        cache_buffer = bytearray() if cache_key else None
+        max_cache_size = self._get_config('stream.media.maxCacheItemSize', 10485760)
         
         try:
             async for chunk in response.content.iter_chunked(self.buffer_size):
-                # 检查流是否仍然活跃
                 if not context.is_active:
                     self.logger.info(f"媒体流被中断: {context.stream_id}")
                     break
                 
-                # 添加到缓冲区
                 buffer.extend(chunk)
                 
-                # 检查是否需要刷新缓冲区
+                if cache_buffer is not None and len(cache_buffer) < max_cache_size:
+                    cache_buffer.extend(chunk)
+                
                 current_time = time.time()
                 should_flush = (
                     len(buffer) >= self.max_buffer_size or
@@ -398,28 +433,23 @@ class MediaHandler:
                 )
                 
                 if should_flush:
-                    # 写入客户端
                     writer.write(bytes(buffer))
                     await writer.drain()
                     
-                    # 更新统计
                     bytes_written = len(buffer)
                     context.bytes_transferred += bytes_written
                     self.stats['bytes_streamed'] += bytes_written
                     chunk_count += 1
                     
-                    # 清空缓冲区
                     buffer.clear()
                     last_flush_time = current_time
                     
-                    # 定期记录进度（每 50 个块）
                     if chunk_count % 50 == 0:
                         self.logger.debug(
                             f"媒体流传输进度: {context.stream_id} | "
                             f"已传输={context.bytes_transferred} bytes"
                         )
             
-            # 刷新剩余数据
             if buffer:
                 writer.write(bytes(buffer))
                 await writer.drain()
@@ -427,6 +457,18 @@ class MediaHandler:
                 bytes_written = len(buffer)
                 context.bytes_transferred += bytes_written
                 self.stats['bytes_streamed'] += bytes_written
+            
+            if cache_key and cache_buffer and len(cache_buffer) <= max_cache_size:
+                content_type = response.headers.get('Content-Type', '')
+                cache_data = {
+                    'content': bytes(cache_buffer),
+                    'content_type': content_type,
+                    'content_length': len(cache_buffer),
+                    'timestamp': time.time(),
+                    'url': context.target_url
+                }
+                if await self.cache_content(cache_key, cache_data):
+                    self.logger.debug(f"媒体内容已缓存: {cache_key} | 大小={len(cache_buffer)}")
             
             self.logger.info(
                 f"媒体流传输完成: {context.stream_id} | "
@@ -777,3 +819,167 @@ class MediaHandler:
         """
         await self.clear_cache()
         return False
+    
+    def _generate_cache_key(self, url: str) -> str:
+        """
+        生成缓存键
+        
+        使用 URL 的哈希值作为缓存键，确保相同 URL 的请求使用相同的缓存。
+        
+        Args:
+            url: 目标 URL
+            
+        Returns:
+            缓存键字符串
+        """
+        import hashlib
+        return hashlib.md5(url.encode('utf-8')).hexdigest()
+    
+    def _should_cache(self, response: aiohttp.ClientResponse, context: StreamContext) -> bool:
+        """
+        判断是否应该缓存响应
+        
+        缓存条件：
+        1. 响应状态码为 200
+        2. Content-Length 存在且不超过最大缓存大小
+        3. Content-Type 是可缓存的媒体类型
+        4. 没有 Cache-Control: no-cache 或 no-store 头
+        
+        Args:
+            response: 目标服务器响应
+            context: 流上下文
+            
+        Returns:
+            是否应该缓存
+        """
+        if response.status != 200:
+            return False
+        
+        content_length = response.content_length
+        if content_length is None:
+            return False
+        
+        max_cache_item_size = self._get_config('stream.media.maxCacheItemSize', 10485760)
+        if content_length > max_cache_item_size:
+            return False
+        
+        content_type = response.headers.get('Content-Type', '').lower()
+        cacheable_types = [
+            'video/', 'audio/',
+            'application/x-mpegurl', 'application/vnd.apple.mpegurl',
+            'application/ogg'
+        ]
+        
+        is_cacheable_type = any(ct in content_type for ct in cacheable_types)
+        if not is_cacheable_type:
+            return False
+        
+        cache_control = response.headers.get('Cache-Control', '').lower()
+        if 'no-cache' in cache_control or 'no-store' in cache_control:
+            return False
+        
+        return True
+    
+    async def _send_cached_response(self,
+                                   writer: asyncio.StreamWriter,
+                                   response: aiohttp.ClientResponse,
+                                   cached_data: dict,
+                                   context: StreamContext) -> None:
+        """
+        发送缓存的响应
+        
+        从缓存数据构建并发送 HTTP 响应。
+        
+        Args:
+            writer: 客户端写入器
+            response: 目标服务器响应（用于获取额外头信息）
+            cached_data: 缓存的数据字典
+            context: 流上下文
+        """
+        content = cached_data['content']
+        content_type = cached_data.get('content_type', 'application/octet-stream')
+        
+        status_line = "HTTP/1.1 200 OK\r\n"
+        writer.write(status_line.encode('utf-8'))
+        
+        skip_headers = {
+            'transfer-encoding',
+            'content-security-policy',
+            'content-security-policy-report-only',
+            'set-cookie',
+            'content-length',
+            'content-type'
+        }
+        
+        for key, value in response.headers.items():
+            if key.lower() in skip_headers:
+                continue
+            writer.write(f"{key}: {value}\r\n".encode('utf-8'))
+        
+        writer.write(f"Content-Type: {content_type}\r\n".encode('utf-8'))
+        writer.write(f"Content-Length: {len(content)}\r\n".encode('utf-8'))
+        writer.write(b"Accept-Ranges: bytes\r\n")
+        writer.write(b"X-Cache: HIT\r\n")
+        writer.write(b"Via: SilkRoad-Next/3.0 (MediaCache)\r\n")
+        writer.write(b"\r\n")
+        
+        writer.write(content)
+        await writer.drain()
+        
+        context.bytes_transferred = len(content)
+        self.stats['bytes_streamed'] += len(content)
+        
+        self.logger.info(
+            f"缓存响应已发送: {context.stream_id} | "
+            f"大小={len(content)} bytes"
+        )
+    
+    async def _send_cached_range_response(self,
+                                         writer: asyncio.StreamWriter,
+                                         cached_data: dict,
+                                         range_info: RangeInfo,
+                                         context: StreamContext) -> None:
+        """
+        发送缓存的 Range 响应
+        
+        从缓存数据中提取指定范围的内容并发送 206 Partial Content 响应。
+        
+        Args:
+            writer: 客户端写入器
+            cached_data: 缓存的数据字典
+            range_info: Range 信息
+            context: 流上下文
+        """
+        content = cached_data['content']
+        content_type = cached_data.get('content_type', 'application/octet-stream')
+        
+        start = range_info.start
+        end = range_info.end if range_info.end is not None else len(content) - 1
+        total_size = range_info.total if range_info.total is not None else len(content)
+        
+        range_content = content[start:end + 1]
+        content_length = len(range_content)
+        
+        status_line = "HTTP/1.1 206 Partial Content\r\n"
+        writer.write(status_line.encode('utf-8'))
+        
+        writer.write(f"Content-Type: {content_type}\r\n".encode('utf-8'))
+        writer.write(f"Content-Length: {content_length}\r\n".encode('utf-8'))
+        writer.write(f"Content-Range: bytes {start}-{end}/{total_size}\r\n".encode('utf-8'))
+        writer.write(b"Accept-Ranges: bytes\r\n")
+        writer.write(b"X-Cache: HIT\r\n")
+        writer.write(b"Via: SilkRoad-Next/3.0 (MediaCache)\r\n")
+        writer.write(b"\r\n")
+        
+        writer.write(range_content)
+        await writer.drain()
+        
+        context.bytes_transferred = content_length
+        self.stats['bytes_streamed'] += content_length
+        self.stats['range_requests'] += 1
+        
+        self.logger.info(
+            f"缓存 Range 响应已发送: {context.stream_id} | "
+            f"Range: {start}-{end}/{total_size} | "
+            f"大小={content_length} bytes"
+        )

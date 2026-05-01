@@ -18,6 +18,7 @@ import zlib
 from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING
 from urllib.parse import urlsplit, urljoin
 import aiohttp
+from loguru import logger as loguru_logger
 
 from modules.url.handle import URLHandler
 from modules.url.cookie import CookieHandler
@@ -75,7 +76,7 @@ class ProxyServer:
         self.host = host
         self.port = port
         self.config = config
-        self.logger = logger
+        self.logger = logger or loguru_logger
 
         self.server = None
         self.session = None
@@ -979,7 +980,7 @@ class ProxyServer:
                         self.logger.debug(f"Location 头重写（连接池）: {response_headers['Location']}")
 
                     if 'Content-Location' in response_headers:
-                        response_headers['Content-Location'] = self.url_handler.rewrite_location_header(
+                        response_headers['Content-Location'] = self.url_handler.rewrite_content_location_header(
                             response_headers['Content-Location'], target_url
                         )
 
@@ -1222,7 +1223,7 @@ class ProxyServer:
                 self.logger.debug(f"Location 头重写: {headers['Location']}")
 
             if 'Content-Location' in headers:
-                headers['Content-Location'] = self.url_handler.rewrite_location_header(
+                headers['Content-Location'] = self.url_handler.rewrite_content_location_header(
                     headers['Content-Location'], target_url
                 )
 
@@ -1292,7 +1293,7 @@ class ProxyServer:
                 if key_lower == 'location':
                     value = self.url_handler.rewrite_location_header(value, '')
                 elif key_lower == 'content-location':
-                    value = self.url_handler.rewrite_location_header(value, '')
+                    value = self.url_handler.rewrite_content_location_header(value, '')
                 elif key_lower == 'refresh':
                     value = self.url_handler.location_handler.rewrite_refresh_header(value, '')
 
@@ -1578,7 +1579,7 @@ class ProxyServer:
             # 连接已重置，无法发送错误响应
 
         except Exception as e:
-            self.logger.error(f"流请求处理失败 [{target_url}]: {e}", exc_info=True)
+            self.logger.opt(exception=True).error(f"流请求处理失败 [{target_url}]: {e}")
             try:
                 await self._send_error(writer, 502, "Bad Gateway")
             except Exception:
@@ -1859,6 +1860,138 @@ class ProxyServer:
         }
 
         return stats
+
+    def reset_stream_stats(self) -> Dict[str, bool]:
+        """
+        重置所有流处理器的统计信息
+        
+        Returns:
+            包含各处理器重置状态的字典
+        """
+        results = {
+            'stream': False,
+            'media': False,
+            'sse': False,
+            'others': False
+        }
+        
+        try:
+            if self.stream_handler:
+                self.stream_handler.stats = {
+                    'total_streams': 0,
+                    'active_streams': 0,
+                    'media_streams': 0,
+                    'sse_streams': 0,
+                    'bytes_transferred': 0,
+                    'errors': 0,
+                    'waf_blocked': 0
+                }
+                results['stream'] = True
+                self.logger.info("StreamHandler 统计信息已重置")
+        except Exception as e:
+            self.logger.error(f"重置 StreamHandler 统计信息失败: {e}")
+        
+        try:
+            if self.media_handler:
+                self.media_handler.reset_stats()
+                results['media'] = True
+                self.logger.info("MediaHandler 统计信息已重置")
+        except Exception as e:
+            self.logger.error(f"重置 MediaHandler 统计信息失败: {e}")
+        
+        try:
+            if self.sse_handler:
+                self.sse_handler.reset_stats()
+                results['sse'] = True
+                self.logger.info("SSEHandler 统计信息已重置")
+        except Exception as e:
+            self.logger.error(f"重置 SSEHandler 统计信息失败: {e}")
+        
+        try:
+            if self.others_handler:
+                self.others_handler.reset_stats()
+                results['others'] = True
+                self.logger.info("OthersHandler 统计信息已重置")
+        except Exception as e:
+            self.logger.error(f"重置 OthersHandler 统计信息失败: {e}")
+        
+        return results
+
+    def set_stream_rate_limit(
+        self, 
+        enabled: bool, 
+        max_rate: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        动态设置流处理器的流量整形参数
+        
+        Args:
+            enabled: 是否启用流量整形
+            max_rate: 最大传输速率（字节/秒），如果为 None 则保持当前值
+            
+        Returns:
+            包含设置结果和当前配置的字典
+        """
+        result = {
+            'success': False,
+            'enabled': enabled,
+            'max_rate': max_rate,
+            'previous_config': {},
+            'current_config': {}
+        }
+        
+        try:
+            if self.others_handler:
+                result['previous_config'] = {
+                    'enabled': self.others_handler.enable_rate_limit,
+                    'max_rate': self.others_handler.max_rate
+                }
+                
+                self.others_handler.set_rate_limit(enabled, max_rate)
+                
+                result['current_config'] = {
+                    'enabled': self.others_handler.enable_rate_limit,
+                    'max_rate': self.others_handler.max_rate
+                }
+                result['success'] = True
+                
+                self.logger.info(
+                    f"流量整形设置已更新: enabled={enabled}, "
+                    f"max_rate={self.others_handler.max_rate} bytes/s"
+                )
+            else:
+                self.logger.warning("OthersHandler 未初始化，无法设置流量整形")
+                
+        except Exception as e:
+            self.logger.error(f"设置流量整形参数失败: {e}")
+            
+        return result
+
+    def get_stream_rate_limit_status(self) -> Dict[str, Any]:
+        """
+        获取当前流量整形状态
+        
+        Returns:
+            包含流量整形配置和统计信息的字典
+        """
+        status = {
+            'enabled': False,
+            'max_rate': 0,
+            'stats': {}
+        }
+        
+        try:
+            if self.others_handler:
+                status['enabled'] = self.others_handler.enable_rate_limit
+                status['max_rate'] = self.others_handler.max_rate
+                status['stats'] = {
+                    'rate_limited_count': self.others_handler.stats.get('rate_limited', 0),
+                    'bytes_transferred': self.others_handler.stats.get('bytes_transferred', 0)
+                }
+        except Exception as e:
+            self.logger.error(f"获取流量整形状态失败: {e}")
+            
+        return status
 
     def _is_waf_blocked(
         self,

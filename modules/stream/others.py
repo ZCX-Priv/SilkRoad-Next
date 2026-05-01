@@ -16,7 +16,7 @@ import asyncio
 import aiohttp
 import re
 import time
-import logging
+from loguru import logger as loguru_logger
 from typing import Optional, Dict, Any, TYPE_CHECKING
 from dataclasses import dataclass
 
@@ -72,7 +72,7 @@ class OthersHandler:
             logger: 日志记录器，如果为 None 则使用默认 logger
         """
         self.config = config
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or loguru_logger
         
         # 配置参数（使用安全的 get 方法，提供默认值）
         self.default_chunk_size = self._get_config('stream.chunked.defaultChunkSize', 8192)
@@ -162,7 +162,7 @@ class OthersHandler:
                 await self._handle_default(writer, response, context)
             
         except Exception as e:
-            self.logger.error(f"其他流处理错误 [{context.stream_id}]: {e}", exc_info=True)
+            self.logger.opt(exception=True).error(f"其他流处理错误 [{context.stream_id}]: {e}")
             self.stats['errors'] += 1
             raise
     

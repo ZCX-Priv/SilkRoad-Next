@@ -19,7 +19,7 @@ import aiohttp
 import uuid
 import time
 from typing import Optional, Dict, Any, TYPE_CHECKING
-import logging
+from loguru import logger as loguru_logger
 
 from modules.stream import StreamType, StreamContext
 from modules.wafpasser import WAFDetector, WAFPasser
@@ -62,7 +62,7 @@ class StreamHandler:
             logger: 日志记录器，如果为 None 则使用默认 logger
         """
         self.config = config
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or loguru_logger
         
         # 子处理器（由外部注入）
         self.media_handler = None
@@ -326,7 +326,7 @@ class StreamHandler:
             raise
             
         except Exception as e:
-            self.logger.error(f"流处理错误 [{stream_id}]: {e}", exc_info=True)
+            self.logger.opt(exception=True).error(f"流处理错误 [{stream_id}]: {e}")
             self.stats['errors'] += 1
             raise
             

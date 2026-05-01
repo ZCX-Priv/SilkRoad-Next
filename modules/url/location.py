@@ -4,7 +4,7 @@ Location响应头处理器
 """
 import re
 from typing import Dict, Any
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 
 class LocationHandler:
@@ -58,7 +58,7 @@ class LocationHandler:
             return location
 
         if not location.startswith(('http://', 'https://')):
-            parsed_base = urlparse(base_url)
+            parsed_base = urlsplit(base_url)
             scheme = parsed_base.scheme
             netloc = parsed_base.netloc
             base_path = parsed_base.path
@@ -93,7 +93,7 @@ class LocationHandler:
             代理URL格式: /domain/path?query#fragment
         """
         try:
-            parsed = urlparse(target_url)
+            parsed = urlsplit(target_url)
 
             # 构建代理路径
             # 格式: /domain/path?query#fragment
@@ -110,35 +110,6 @@ class LocationHandler:
         except Exception:
             # 解析失败，返回原始URL
             return target_url
-
-    def rewrite_set_cookie_domain(
-        self,
-        set_cookie: str,
-        original_domain: str,
-        proxy_domain: str
-    ) -> str:
-        """
-        重写Set-Cookie头中的Domain属性
-
-        Args:
-            set_cookie: Set-Cookie头的值
-            original_domain: 原始域名
-            proxy_domain: 代理服务器域名
-
-        Returns:
-            重写后的Set-Cookie值
-        """
-        # 移除或修改Domain属性
-        # Domain=example.com -> Domain=proxy.com
-        # 或者直接移除Domain属性（让cookie对当前域名有效）
-
-        # 简单策略：移除Domain属性
-        domain_pattern = re.compile(
-            r';\s*Domain=[^;]+',
-            re.IGNORECASE
-        )
-
-        return domain_pattern.sub('', set_cookie)
 
     def rewrite_content_location(self, content_location: str, base_url: str) -> str:
         """

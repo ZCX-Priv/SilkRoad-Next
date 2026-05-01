@@ -17,7 +17,7 @@ import asyncio
 import json
 import time
 import uuid
-import logging
+from loguru import logger as loguru_logger
 from datetime import datetime
 from typing import Any, Dict, Optional, Set, TYPE_CHECKING
 
@@ -109,7 +109,7 @@ class SessionManager:
         self._lock = asyncio.Lock()
         
         # 日志记录器
-        self._logger = logger or logging.getLogger(__name__)
+        self._logger = logger or loguru_logger
         
         # 清理任务控制
         self._cleanup_task: Optional[asyncio.Task] = None

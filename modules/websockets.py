@@ -22,7 +22,7 @@ from typing import Optional, Dict, Any, List, TYPE_CHECKING
 from enum import Enum, IntEnum
 from dataclasses import dataclass, field
 import time
-import logging
+from loguru import logger as loguru_logger
 import uuid
 
 if TYPE_CHECKING:
@@ -99,7 +99,7 @@ class WebSocketHandler:
             logger: 日志记录器
         """
         self.config = config
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or loguru_logger
         
         self.max_connections = config.get('websocket.maxConnections', 500)
         self.max_message_size = config.get('websocket.maxMessageSize', 1048576)

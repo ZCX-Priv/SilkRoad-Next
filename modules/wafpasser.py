@@ -822,7 +822,7 @@ class RequestObfuscator:
             混淆后的请求头字典
         """
         import random
-        from urllib.parse import urlparse
+        from urllib.parse import urlsplit
         
         obfuscated_headers = original_headers.copy()
         
@@ -842,7 +842,7 @@ class RequestObfuscator:
             obfuscated_headers.update(self._imperva_specific_headers(target_url))
         
         # 设置 Host 和 Origin
-        parsed_url = urlparse(target_url)
+        parsed_url = urlsplit(target_url)
         obfuscated_headers["Host"] = parsed_url.netloc
         obfuscated_headers["Origin"] = f"{parsed_url.scheme}://{parsed_url.netloc}"
         
@@ -956,9 +956,9 @@ class RequestObfuscator:
             伪造的 Referer URL 字符串
         """
         import random
-        from urllib.parse import urlparse
+        from urllib.parse import urlsplit
         
-        parsed = urlparse(target_url)
+        parsed = urlsplit(target_url)
         
         # 常见路径列表
         paths = [
@@ -988,9 +988,9 @@ class RequestObfuscator:
         """
         import random
         import time
-        from urllib.parse import urlparse
+        from urllib.parse import urlsplit
         
-        parsed = urlparse(url)
+        parsed = urlsplit(url)
         
         # 生成随机参数
         random_param = f"_t={int(time.time() * 1000)}"

@@ -19,7 +19,7 @@ import aiohttp
 from typing import Dict, Optional, Tuple, Any, TYPE_CHECKING
 from datetime import datetime
 import time
-import logging
+from loguru import logger as loguru_logger
 
 from modules.wafpasser import SessionPersistenceManager
 
@@ -90,7 +90,7 @@ class ConnectionPool:
         self._lock = asyncio.Lock()
         
         # 日志记录器
-        self._logger = logger or logging.getLogger(__name__)
+        self._logger = logger or loguru_logger
         
         # 会话持久化管理器（V5 集成）
         self.session_manager = SessionPersistenceManager()

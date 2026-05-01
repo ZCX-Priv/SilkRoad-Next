@@ -15,7 +15,7 @@
 
 import asyncio
 import json
-import logging
+from loguru import logger as loguru_logger
 import re
 from datetime import datetime
 from pathlib import Path
@@ -111,7 +111,7 @@ class ScriptInjector:
         self._lock = asyncio.Lock()
         
         # 日志记录器
-        self._logger = logger or logging.getLogger(__name__)
+        self._logger = logger or loguru_logger
         
         # 配置加载状态
         self._config_loaded = False

@@ -18,6 +18,7 @@ import mimetypes
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Set
 import asyncio
+from loguru import logger as loguru_logger
 
 
 class PageServer:
@@ -46,7 +47,7 @@ class PageServer:
             logger: 日志管理器对象，用于记录日志
         """
         self.config = config
-        self.logger = logger
+        self.logger = logger or loguru_logger
 
         # 静态资源根目录
         self.pages_dir = Path('pages')
