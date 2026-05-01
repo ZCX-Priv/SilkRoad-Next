@@ -4,7 +4,7 @@ HTML内容处理器
 """
 import re
 from typing import Dict, Any, List, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 
 class HTMLHandler:
@@ -120,9 +120,38 @@ class HTMLHandler:
 
         html = await self._rewrite_style_urls(html, base_url)
 
+        html = await self._rewrite_style_tag_urls(html, base_url)
+
         html = await self._handle_base_tag(html)
 
         return html
+
+    async def _rewrite_style_tag_urls(self, html: str, base_url: str) -> str:
+        """
+        重写 <style> 标签内的 URL
+
+        处理 <style> 标签内的 url() 引用，如 @font-face 和 background-image
+
+        Args:
+            html: HTML文本
+            base_url: 基础URL
+
+        Returns:
+            重写后的HTML
+        """
+        style_tag_pattern = re.compile(r'(<style[^>]*>)(.*?)(</style>)', re.IGNORECASE | re.DOTALL)
+
+        def replace_style_tag(match):
+            """替换 <style> 标签内的 URL"""
+            opening_tag = match.group(1)
+            style_content = match.group(2)
+            closing_tag = match.group(3)
+
+            rewritten_content = self._rewrite_style_content(style_content, base_url)
+
+            return f"{opening_tag}{rewritten_content}{closing_tag}"
+
+        return style_tag_pattern.sub(replace_style_tag, html)
 
     async def _inject_csp_meta(self, html: str) -> str:
         """
@@ -310,7 +339,7 @@ class HTMLHandler:
             return url
 
         if not url.startswith(('http://', 'https://')):
-            parsed_base = urlparse(base_url)
+            parsed_base = urlsplit(base_url)
             scheme = parsed_base.scheme
             netloc = parsed_base.netloc
             base_path = parsed_base.path
@@ -345,7 +374,7 @@ class HTMLHandler:
             代理URL格式: /domain/path?query#fragment
         """
         try:
-            parsed = urlparse(target_url)
+            parsed = urlsplit(target_url)
 
             # 构建代理路径
             # 格式: /domain/path?query#fragment

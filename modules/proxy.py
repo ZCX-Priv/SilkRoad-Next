@@ -16,7 +16,7 @@ import gzip
 import json
 import zlib
 from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlsplit, urljoin
 import aiohttp
 
 from modules.url.handle import URLHandler
@@ -307,7 +307,7 @@ class ProxyServer:
 
         # ========== V2: 黑名单检查 ==========
         if self.blacklist_manager:
-            parsed = urlparse(target_url)
+            parsed = urlsplit(target_url)
             domain = parsed.netloc
 
             is_blocked, reason = await self.blacklist_manager.is_blocked(
@@ -618,7 +618,7 @@ class ProxyServer:
             return None
 
         try:
-            parsed = urlparse(referer)
+            parsed = urlsplit(referer)
             referer_path = parsed.path.lstrip('/')
 
             if not referer_path:
@@ -672,7 +672,7 @@ class ProxyServer:
             
             forward_headers[key] = value
 
-        parsed = urlparse(target_url)
+        parsed = urlsplit(target_url)
 
         forward_headers['Host'] = parsed.netloc
 
@@ -683,6 +683,12 @@ class ProxyServer:
         if 'User-Agent' not in forward_headers:
             forward_headers['User-Agent'] = self.ua_handler.get_random_ua()
 
+        # 重写 Referer 头以匹配目标域名（防盗链绕过）
+        if 'Referer' in forward_headers:
+            forward_headers['Referer'] = self._rewrite_referer(
+                forward_headers['Referer'], target_url
+            )
+
         # V5: WAF 穿透 - 请求头混淆
         if self.waf_passer.is_waf_evasion_enabled():
             forward_headers = self.request_obfuscator.obfuscate_headers(
@@ -691,6 +697,53 @@ class ProxyServer:
             )
 
         return forward_headers
+
+    def _rewrite_referer(self, referer: str, target_url: str) -> str:
+        """
+        重写 Referer 头以匹配目标域名
+
+        将代理格式的 Referer (如 http://127.0.0.1:8080/www.baidu.com/path)
+        转换为真实目标的 Referer (如 https://www.baidu.com/path)
+
+        Args:
+            referer: 原始 Referer 头
+            target_url: 当前请求的目标 URL
+
+        Returns:
+            重写后的 Referer
+        """
+        try:
+            parsed_target = urlsplit(target_url)
+            target_scheme = parsed_target.scheme
+            target_netloc = parsed_target.netloc
+
+            parsed_referer = urlsplit(referer)
+            referer_path = parsed_referer.path
+
+            if not referer_path or referer_path == '/':
+                return f"{target_scheme}://{target_netloc}/"
+
+            referer_path = referer_path.lstrip('/')
+
+            parts = referer_path.split('/', 1)
+            first_segment = parts[0]
+
+            if self._is_valid_host(first_segment):
+                referer_host = first_segment
+                referer_remaining = '/' + parts[1] if len(parts) > 1 else '/'
+
+                if not referer_host.startswith('http://') and not referer_host.startswith('https://'):
+                    if ':80' in referer_host:
+                        referer_host = 'http://' + referer_host
+                    else:
+                        referer_host = 'https://' + referer_host
+
+                return f"{referer_host}{referer_remaining}"
+            else:
+                return f"{target_scheme}://{target_netloc}{referer_path}"
+
+        except Exception:
+            return referer
 
     async def _forward_request(self, writer: asyncio.StreamWriter,
                                 method: str, target_url: str,
@@ -744,7 +797,7 @@ class ProxyServer:
                         self.logger.debug(f"重定向到: {current_url}")
 
                         # 更新 Host 头
-                        parsed = urlparse(current_url)
+                        parsed = urlsplit(current_url)
                         headers['Host'] = parsed.netloc
 
                         # 303 重定向需要改为 GET 方法
@@ -795,7 +848,7 @@ class ProxyServer:
             body: 请求体
         """
         assert self.connection_pool is not None
-        parsed = urlparse(target_url)
+        parsed = urlsplit(target_url)
         host = parsed.netloc
         port = 443 if parsed.scheme == 'https' else 80
         is_https = parsed.scheme == 'https'
@@ -918,6 +971,23 @@ class ProxyServer:
                     response_headers.pop('Content-Security-Policy', None)
                     response_headers.pop('Content-Security-Policy-Report-Only', None)
 
+                    # 重写重定向相关的响应头 URL
+                    if 'Location' in response_headers:
+                        response_headers['Location'] = self.url_handler.rewrite_location_header(
+                            response_headers['Location'], target_url
+                        )
+                        self.logger.debug(f"Location 头重写（连接池）: {response_headers['Location']}")
+
+                    if 'Content-Location' in response_headers:
+                        response_headers['Content-Location'] = self.url_handler.rewrite_location_header(
+                            response_headers['Content-Location'], target_url
+                        )
+
+                    if 'Refresh' in response_headers:
+                        response_headers['Refresh'] = self.url_handler.location_handler.rewrite_refresh_header(
+                            response_headers['Refresh'], target_url
+                        )
+
                     # 处理 Cookie
                     target_domain = self.cookie_handler.extract_domain_from_url(target_url)
                     set_cookie_values = None
@@ -1038,7 +1108,7 @@ class ProxyServer:
 
         # 协议相对 URL
         if location.startswith('//'):
-            parsed = urlparse(base_url)
+            parsed = urlsplit(base_url)
             return f"{parsed.scheme}:{location}"
 
         # 相对路径 URL
@@ -1144,6 +1214,23 @@ class ProxyServer:
             headers.pop('Content-Security-Policy', None)
             headers.pop('Content-Security-Policy-Report-Only', None)
 
+            # 重写重定向相关的响应头 URL
+            if 'Location' in headers:
+                headers['Location'] = self.url_handler.rewrite_location_header(
+                    headers['Location'], target_url
+                )
+                self.logger.debug(f"Location 头重写: {headers['Location']}")
+
+            if 'Content-Location' in headers:
+                headers['Content-Location'] = self.url_handler.rewrite_location_header(
+                    headers['Content-Location'], target_url
+                )
+
+            if 'Refresh' in headers:
+                headers['Refresh'] = self.url_handler.location_handler.rewrite_refresh_header(
+                    headers['Refresh'], target_url
+                )
+
             target_domain = self.cookie_handler.extract_domain_from_url(target_url)
 
             set_cookie_values = None
@@ -1197,8 +1284,18 @@ class ProxyServer:
             writer.write(status_line.encode('utf-8'))
 
             for key, value in response.headers.items():
-                if key.lower() in ['transfer-encoding', 'content-security-policy', 'content-security-policy-report-only', 'set-cookie']:
+                key_lower = key.lower()
+                if key_lower in ['transfer-encoding', 'content-security-policy', 'content-security-policy-report-only', 'set-cookie']:
                     continue
+
+                # 重写重定向相关的响应头 URL
+                if key_lower == 'location':
+                    value = self.url_handler.rewrite_location_header(value, '')
+                elif key_lower == 'content-location':
+                    value = self.url_handler.rewrite_location_header(value, '')
+                elif key_lower == 'refresh':
+                    value = self.url_handler.location_handler.rewrite_refresh_header(value, '')
+
                 writer.write(f"{key}: {value}\r\n".encode('utf-8'))
 
             writer.write(b"Via: SilkRoad-Next/1.0\r\n")
@@ -1924,8 +2021,7 @@ class ProxyServer:
 
         elif strategy.name == "referer_spoofing":
             # Referer 伪造
-            from urllib.parse import urlparse
-            parsed = urlparse(target_url)
+            parsed = urlsplit(target_url)
             import random
             paths = ["/", "/index.html", "/search", "/home"]
             headers['Referer'] = f"{parsed.scheme}://{parsed.netloc}{random.choice(paths)}"
