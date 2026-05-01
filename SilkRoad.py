@@ -252,7 +252,7 @@ class SilkRoad:
             if self.config.get('websocket.enabled', False):
                 from modules.websockets import WebSocketHandler
                 
-                self.websocket_handler = WebSocketHandler(self.config, self.logger.logger)
+                self.websocket_handler = WebSocketHandler(self.config, self.logger)  # type: ignore[arg-type]
                 self.logger.info("WebSocket 处理器已启用")
 
             # 11. 初始化流量控制器
@@ -260,7 +260,7 @@ class SilkRoad:
             if self.config.get('trafficControl.enabled', False):
                 from modules.controler import TrafficController
                 
-                self.traffic_controller = TrafficController(self.config, self.logger.logger)
+                self.traffic_controller = TrafficController(self.config, self.logger)  # type: ignore[arg-type]
                 
                 asyncio.create_task(self.traffic_controller.start_scheduler())
                 self.logger.info("流量控制器已启用")
@@ -288,30 +288,30 @@ class SilkRoad:
                 host=proxy_host,
                 port=proxy_port,
                 config=self.config,
-                logger=self.logger
+                logger=self.logger  # type: ignore[arg-type]
             )
 
             # 注入 V2 模块到代理服务器
-            self.proxy_server.connection_pool = self.connection_pool
-            self.proxy_server.thread_pool = self.thread_pool
-            self.proxy_server.session_manager = self.session_manager
-            self.proxy_server.cache_manager = self.cache_manager
-            self.proxy_server.blacklist_manager = self.blacklist_manager
-            self.proxy_server.script_injector = self.script_injector
+            self.proxy_server.connection_pool = self.connection_pool  # type: ignore[assignment]
+            self.proxy_server.thread_pool = self.thread_pool  # type: ignore[assignment]
+            self.proxy_server.session_manager = self.session_manager  # type: ignore[assignment]
+            self.proxy_server.cache_manager = self.cache_manager  # type: ignore[assignment]
+            self.proxy_server.blacklist_manager = self.blacklist_manager  # type: ignore[assignment]
+            self.proxy_server.script_injector = self.script_injector  # type: ignore[assignment]
 
             # 注入 V3 模块到代理服务器
-            self.proxy_server.stream_handler = self.stream_handler
-            self.proxy_server.media_handler = self.media_handler
-            self.proxy_server.sse_handler = self.sse_handler
-            self.proxy_server.others_handler = self.others_handler
+            self.proxy_server.stream_handler = self.stream_handler  # type: ignore[assignment]
+            self.proxy_server.media_handler = self.media_handler  # type: ignore[assignment]
+            self.proxy_server.sse_handler = self.sse_handler  # type: ignore[assignment]
+            self.proxy_server.others_handler = self.others_handler  # type: ignore[assignment]
 
             # 注入 V4 模块到代理服务器
-            self.proxy_server.websocket_handler = self.websocket_handler
-            self.proxy_server.traffic_controller = self.traffic_controller
+            self.proxy_server.websocket_handler = self.websocket_handler  # type: ignore[assignment]
+            self.proxy_server.traffic_controller = self.traffic_controller  # type: ignore[assignment]
 
             # 注入 V5 模块到代理服务器
-            self.proxy_server.waf_passer = self.waf_passer
-            self.proxy_server.waf_detector = self.waf_detector
+            self.proxy_server.waf_passer = self.waf_passer  # type: ignore[assignment]
+            self.proxy_server.waf_detector = self.waf_detector  # type: ignore[assignment]
 
             self.logger.info(f"代理服务器配置: {proxy_host}:{proxy_port}")
 
