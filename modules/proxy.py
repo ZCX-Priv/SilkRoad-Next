@@ -27,6 +27,18 @@ from modules.wafpasser import WAFPasser, WAFDetector, RequestObfuscator
 
 if TYPE_CHECKING:
     from modules.command import CommandHandler
+    from modules.scripts import ScriptInjector
+    from modules.connectionpool import ConnectionPool
+    from modules.threadpool import ThreadPoolManager
+    from modules.sessions import SessionManager
+    from modules.cachemanager import CacheManager
+    from modules.blacklist import BlacklistManager
+    from modules.stream.handle import StreamHandler
+    from modules.stream.media import MediaHandler
+    from modules.stream.sse import SSEHandler
+    from modules.stream.others import OthersHandler
+    from modules.websockets import WebSocketHandler
+    from modules.controler import TrafficController
 
 
 class ProxyServer:
@@ -78,22 +90,22 @@ class ProxyServer:
         self.is_running = False
 
         # V2 新增组件属性
-        self.connection_pool = None
-        self.thread_pool = None
-        self.session_manager = None
-        self.cache_manager = None
-        self.blacklist_manager = None
-        self.script_injector = None
+        self.connection_pool: Optional['ConnectionPool'] = None
+        self.thread_pool: Optional['ThreadPoolManager'] = None
+        self.session_manager: Optional['SessionManager'] = None
+        self.cache_manager: Optional['CacheManager'] = None
+        self.blacklist_manager: Optional['BlacklistManager'] = None
+        self.script_injector: Optional['ScriptInjector'] = None
 
         # V3 新增流处理器属性
-        self.stream_handler = None
-        self.media_handler = None
-        self.sse_handler = None
-        self.others_handler = None
+        self.stream_handler: Optional['StreamHandler'] = None
+        self.media_handler: Optional['MediaHandler'] = None
+        self.sse_handler: Optional['SSEHandler'] = None
+        self.others_handler: Optional['OthersHandler'] = None
 
         # V4 新增组件属性
-        self.websocket_handler = None
-        self.traffic_controller = None
+        self.websocket_handler: Optional['WebSocketHandler'] = None
+        self.traffic_controller: Optional['TrafficController'] = None
 
         # V5 新增 WAF 穿透组件属性
         self.waf_passer = WAFPasser()
@@ -384,7 +396,7 @@ class ProxyServer:
 
         try:
             # ========== V4: WebSocket 升级检查 ==========
-            if self._is_websocket_upgrade(headers):
+            if self.websocket_handler and self._is_websocket_upgrade(headers):
                 self.logger.info(f"检测到 WebSocket 升级请求，使用 V4 WebSocket 处理器: {target_url}")
                 await self.websocket_handler.handle_upgrade(
                     writer, headers, target_url
@@ -782,6 +794,7 @@ class ProxyServer:
             headers: 请求头
             body: 请求体
         """
+        assert self.connection_pool is not None
         parsed = urlparse(target_url)
         host = parsed.netloc
         port = 443 if parsed.scheme == 'https' else 80
@@ -862,9 +875,9 @@ class ProxyServer:
                         try:
                             self.logger.info(f"开始脚本注入: {target_url}")
                             # 将字节解码为字符串
+                            encoding = 'utf-8'
                             if isinstance(content, bytes):
                                 # 尝试从 content_type 获取编码
-                                encoding = 'utf-8'
                                 if 'charset=' in content_type:
                                     charset = content_type.split('charset=')[-1].split(';')[0].strip()
                                     if charset:
