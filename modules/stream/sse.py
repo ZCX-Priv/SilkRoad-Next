@@ -14,12 +14,15 @@ Server-Sent Events 处理模块
 
 import asyncio
 import aiohttp
-from typing import Optional, Dict, List, AsyncIterator, Any
+from typing import Optional, Dict, List, AsyncIterator, Any, TYPE_CHECKING
 import time
 import logging
 from dataclasses import dataclass, field
 
 from modules.stream import StreamContext
+
+if TYPE_CHECKING:
+    from modules.logging import Logger
 
 
 @dataclass
@@ -79,7 +82,7 @@ class SSEHandler:
         stats: 统计信息字典
     """
     
-    def __init__(self, config, logger: Optional[logging.Logger] = None):
+    def __init__(self, config, logger: Optional['Logger'] = None):
         """
         初始化 SSE 处理器
         

@@ -16,7 +16,7 @@ Version: 4.0.0
 import asyncio
 import random
 import time
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 from enum import Enum
 from dataclasses import dataclass, field
 from collections import deque
@@ -24,6 +24,9 @@ import logging
 import uuid
 
 from modules.wafpasser import WAFPasser, RequestObfuscator
+
+if TYPE_CHECKING:
+    from modules.logging import Logger
 
 
 class RequestPriority(Enum):
@@ -68,7 +71,7 @@ class TrafficController:
     4. 优先级队列
     """
     
-    def __init__(self, config, logger: Optional[logging.Logger] = None):
+    def __init__(self, config, logger: Optional['Logger'] = None):
         """
         初始化流量控制器
         
@@ -451,7 +454,7 @@ class BandwidthManager:
     3. 流量整形
     """
     
-    def __init__(self, max_bandwidth: int, logger: Optional[logging.Logger] = None):
+    def __init__(self, max_bandwidth: int, logger: Optional['Logger'] = None):
         """
         初始化带宽管理器
         

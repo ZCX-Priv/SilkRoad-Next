@@ -19,7 +19,10 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from modules.logging import Logger
 
 
 class ScriptInjector:
@@ -82,7 +85,7 @@ class ScriptInjector:
         self,
         config_file: str = 'databases/scripts.json',
         scripts_dir: str = 'Scripts',
-        logger: Optional[logging.Logger] = None
+        logger: Optional['Logger'] = None
     ):
         """
         初始化脚本注入管理器
@@ -1063,7 +1066,7 @@ class ScriptInjector:
 def create_script_injector(
     config_file: str = 'databases/scripts.json',
     scripts_dir: str = 'Scripts',
-    logger: Optional[logging.Logger] = None
+    logger: Optional['Logger'] = None
 ) -> ScriptInjector:
     """
     创建脚本注入器的便捷函数

@@ -17,10 +17,13 @@ import aiohttp
 import re
 import time
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, TYPE_CHECKING
 from dataclasses import dataclass
 
 from modules.stream import StreamContext
+
+if TYPE_CHECKING:
+    from modules.logging import Logger
 
 
 @dataclass
@@ -60,7 +63,7 @@ class OthersHandler:
         stats: 统计信息字典
     """
     
-    def __init__(self, config, logger: Optional[logging.Logger] = None):
+    def __init__(self, config, logger: Optional['Logger'] = None):
         """
         初始化其他流处理器
         

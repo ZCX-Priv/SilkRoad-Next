@@ -18,12 +18,15 @@ import aiohttp
 import hashlib
 import base64
 import struct
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 from enum import Enum, IntEnum
 from dataclasses import dataclass, field
 import time
 import logging
 import uuid
+
+if TYPE_CHECKING:
+    from modules.logging import Logger
 
 
 class OpCode(IntEnum):
@@ -87,7 +90,7 @@ class WebSocketHandler:
     
     WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     
-    def __init__(self, config, logger: Optional[logging.Logger] = None):
+    def __init__(self, config, logger: Optional['Logger'] = None):
         """
         初始化 WebSocket 处理器
         

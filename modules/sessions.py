@@ -19,7 +19,10 @@ import time
 import uuid
 import logging
 from datetime import datetime
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, Optional, Set, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from modules.logging import Logger
 
 
 class SessionManager:
@@ -78,7 +81,7 @@ class SessionManager:
         session_timeout: int = 1800,
         cleanup_interval: int = 60,
         max_data_size: int = 1048576,
-        logger: Optional[logging.Logger] = None
+        logger: Optional['Logger'] = None
     ):
         """
         初始化会话管理器
@@ -847,7 +850,7 @@ def create_session_manager(
     session_timeout: int = 1800,
     cleanup_interval: int = 60,
     max_data_size: int = 1048576,
-    logger: Optional[logging.Logger] = None
+    logger: Optional['Logger'] = None
 ) -> SessionManager:
     """
     创建会话管理器的便捷函数

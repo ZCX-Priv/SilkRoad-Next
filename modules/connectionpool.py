@@ -16,12 +16,15 @@
 
 import asyncio
 import aiohttp
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any, TYPE_CHECKING
 from datetime import datetime
 import time
 import logging
 
 from modules.wafpasser import SessionPersistenceManager
+
+if TYPE_CHECKING:
+    from modules.logging import Logger
 
 
 class ConnectionPool:
@@ -57,7 +60,7 @@ class ConnectionPool:
                  max_connections_per_host: int = 10,
                  connection_timeout: int = 30,
                  keep_alive_timeout: int = 60,
-                 logger: Optional[logging.Logger] = None):
+                 logger: Optional['Logger'] = None):
         """
         初始化连接池
         
@@ -648,7 +651,7 @@ async def create_connection_pool(
     max_connections_per_host: int = 10,
     connection_timeout: int = 30,
     keep_alive_timeout: int = 60,
-    logger: Optional[logging.Logger] = None
+    logger: Optional['Logger'] = None
 ) -> ConnectionPool:
     """
     创建连接池的便捷函数

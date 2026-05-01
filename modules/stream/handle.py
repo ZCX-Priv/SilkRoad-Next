@@ -18,11 +18,14 @@ import asyncio
 import aiohttp
 import uuid
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, TYPE_CHECKING
 import logging
 
 from modules.stream import StreamType, StreamContext
 from modules.wafpasser import WAFDetector, WAFPasser
+
+if TYPE_CHECKING:
+    from modules.logging import Logger
 
 
 class StreamHandler:
@@ -50,7 +53,7 @@ class StreamHandler:
         stream_timeout: 流超时时间
     """
     
-    def __init__(self, config, logger: Optional[logging.Logger] = None):
+    def __init__(self, config, logger: Optional['Logger'] = None):
         """
         初始化流处理器
         
