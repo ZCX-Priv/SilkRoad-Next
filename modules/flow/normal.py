@@ -282,9 +282,10 @@ class NormalHandler:
                                 if cookies and self.connection_pool:
                                     _sm = getattr(self.connection_pool, 'session_manager', None)  # type: ignore[attr-defined]
                                     if _sm:
-                                        session_data = _sm.load_session(session_id) or {}
-                                        session_data.setdefault('cookies', {}).update(cookies)
-                                        _sm.save_session(session_id, session_data)
+                                        existing_session = await _sm.get_session(session_id)
+                                        existing_cookies = (existing_session or {}).get('data', {}).get('cookies', {})
+                                        existing_cookies.update(cookies)
+                                        await _sm.update_session(session_id, {'cookies': existing_cookies})
                                     self.logger.debug(
                                         f"V5 会话持久化: 保存 {len(cookies)} 个 Cookie 到会话 {session_id}"
                                     )

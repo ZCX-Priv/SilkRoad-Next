@@ -85,6 +85,7 @@ class ConnectionPool:
         self._connection_pool_map: Dict[int, str] = {}
 
         self.session_manager: Any = None
+        self._session_cookies: Dict[str, str] = {}
         
         # 锁机制，确保线程安全
         self._lock = asyncio.Lock()
@@ -130,8 +131,8 @@ class ConnectionPool:
             ConnectionError: 当连接池已满且无法创建新连接时
         """
         # 如果提供了 session_id，尝试加载会话数据
-        if session_id:
-            session_data = self.session_manager.load_session(session_id)
+        if session_id and self.session_manager:
+            session_data = await self.session_manager.get_session(session_id)
             if session_data:
                 self._logger.debug(
                     f"使用会话数据创建连接: session_id={session_id}, host={host}"
@@ -314,7 +315,7 @@ class ConnectionPool:
         )
         
         # 从会话数据中提取 Cookie
-        cookies = session_data.get("cookies", {})
+        cookies = session_data.get("data", {}).get("cookies", {})
         domain_cookies: Dict[str, str] = {}
         
         for cookie_name, cookie_data in cookies.items():

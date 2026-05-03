@@ -300,6 +300,10 @@ class SilkRoad:
             self.proxy_server.blacklist_manager = self.blacklist_manager  # type: ignore[assignment]
             self.proxy_server.script_injector = self.script_injector  # type: ignore[assignment]
 
+            # 注入会话管理器到连接池
+            if self.connection_pool and self.session_manager:
+                self.connection_pool.session_manager = self.session_manager
+
             # 注入 V3 模块到代理服务器
             self.proxy_server.flow_router = self.flow_router  # type: ignore[assignment]
             self.proxy_server.normal_handler = self.normal_handler  # type: ignore[assignment]
