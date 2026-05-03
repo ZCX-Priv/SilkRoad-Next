@@ -1,5 +1,20 @@
 {
   "scripts": {
+    "ajax-interceptor": {
+      "file": "ajax-interceptor.js",
+      "enabled": true,
+      "position": "head_start",
+      "priority": 200,
+      "conditions": {
+        "url_patterns": [
+          ".*"
+        ],
+        "content_types": [
+          "text/html"
+        ]
+      },
+      "description": "AJAX拦截器 - 拦截并重写AJAX请求URL，确保通过代理服务器转发"
+    },
     "dock": {
       "file": "dock.js",
       "enabled": true,

@@ -666,6 +666,11 @@ class SilkRoad:
                 max_workers = self.config.get('performance.threadPool.maxWorkers', 4)
                 self.logger.info(f"线程池配置已更新: maxWorkers={max_workers}")
             
+            # 重载脚本注入器配置
+            if self.script_injector:
+                await self.script_injector.reload_config()
+                self.logger.info("脚本注入器配置已重载")
+            
             self.logger.info("=" * 60)
             self.logger.info("配置热重载完成")
             self.logger.info("=" * 60)
