@@ -416,8 +416,10 @@ class HTMLHandler:
         try:
             parsed = urlsplit(target_url)
 
-            # 构建代理路径
-            # 格式: /domain/path?query#fragment
+            if not parsed.netloc:
+                self._skip_debug_log = getattr(self, '_skip_debug_log', False)
+                return target_url
+
             proxy_path = f"/{parsed.netloc}{parsed.path}"
 
             if parsed.query:
@@ -429,7 +431,6 @@ class HTMLHandler:
             return proxy_path
 
         except Exception:
-            # 解析失败，返回原始URL
             return target_url
 
     async def _handle_base_tag(self, html: str) -> str:

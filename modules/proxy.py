@@ -569,7 +569,7 @@ class ProxyServer:
                 return True
             if potential_tld.isdigit():
                 return True
-            if len(potential_tld) == 2:
+            if len(potential_tld) == 2 and potential_tld not in file_extensions:
                 return True
 
         return False

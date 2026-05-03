@@ -185,8 +185,9 @@ class XMLHandler:
         try:
             parsed = urlsplit(target_url)
 
-            # 构建代理路径
-            # 格式: /domain/path?query#fragment
+            if not parsed.netloc:
+                return target_url
+
             proxy_path = f"/{parsed.netloc}{parsed.path}"
 
             if parsed.query:
@@ -198,5 +199,4 @@ class XMLHandler:
             return proxy_path
 
         except Exception:
-            # 解析失败，返回原始URL
             return target_url
