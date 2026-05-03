@@ -44,10 +44,8 @@ class SilkRoad:
         script_injector: 脚本注入器（用于注入自定义 JS 脚本）
 
         V3 Components:
-        stream_handler: 流处理器（用于处理流式响应）
-        media_handler: 媒体流处理器（用于处理视频/音频流）
-        sse_handler: SSE 处理器（用于处理 Server-Sent Events）
-        others_handler: 其他流处理器（用于处理分块传输等）
+        flow_router: 流量路由器（用于路由请求到不同的处理器）
+        normal_handler: 普通请求处理器（用于处理非流式请求）
     """
 
     def __init__(self):
@@ -91,17 +89,11 @@ class SilkRoad:
         self.script_injector = None
 
         # ========== V3 新增组件 ==========
-        # 流处理器（用于处理流式响应）
-        self.stream_handler = None
+        # 流量路由器（用于路由请求到不同的处理器）
+        self.flow_router = None
 
-        # 媒体流处理器（用于处理视频/音频流）
-        self.media_handler = None
-
-        # SSE 处理器（用于处理 Server-Sent Events）
-        self.sse_handler = None
-
-        # 其他流处理器（用于处理分块传输等）
-        self.others_handler = None
+        # 普通请求处理器（用于处理非流式请求）
+        self.normal_handler = None
 
         # ========== V4 新增组件 ==========
         # WebSocket 处理器（用于处理 WebSocket 协议）
@@ -249,10 +241,12 @@ class SilkRoad:
             # 9. 初始化流处理器
             print("[9/14] 初始化流处理器...")
             if self.config.get('stream.enabled', False):
-                from modules.stream.handle import StreamHandler
-                from modules.stream.media import MediaHandler
-                from modules.stream.sse import SSEHandler
-                from modules.stream.others import OthersHandler
+                from modules.flow.handle import StreamHandler
+                from modules.flow.media import MediaHandler
+                from modules.flow.sse import SSEHandler
+                from modules.flow.others import OthersHandler
+                from modules.flow.router import FlowRouter
+                from modules.flow.normal import NormalHandler
 
                 # 创建流处理器
                 self.stream_handler = StreamHandler(self.config, self.logger)
@@ -267,13 +261,21 @@ class SilkRoad:
                 self.stream_handler.set_sse_handler(self.sse_handler)
                 self.stream_handler.set_others_handler(self.others_handler)
 
+                # 创建普通请求处理器和流量路由器
+                self.normal_handler = NormalHandler(self.config, self.logger)
+                self.flow_router = FlowRouter(self.config, self.logger)
+
+                # 注入处理器到 FlowRouter
+                self.flow_router.set_normal_handler(self.normal_handler)
+                self.flow_router.set_stream_handler(self.stream_handler)
+
                 self.logger.info("流处理器已启用")
 
             # ========== V4 初始化 ==========
             # 10. 初始化 WebSocket 处理器
             print("[10/15] 初始化 WebSocket 处理器...")
             if self.config.get('websocket.enabled', False):
-                from modules.websockets import WebSocketHandler
+                from modules.flow.websocket import WebSocketHandler
                 
                 self.websocket_handler = WebSocketHandler(self.config, self.logger)  # type: ignore[arg-type]
                 self.logger.info("WebSocket 处理器已启用")
@@ -299,13 +301,31 @@ class SilkRoad:
             self.proxy_server.script_injector = self.script_injector  # type: ignore[assignment]
 
             # 注入 V3 模块到代理服务器
-            self.proxy_server.stream_handler = self.stream_handler  # type: ignore[assignment]
-            self.proxy_server.media_handler = self.media_handler  # type: ignore[assignment]
-            self.proxy_server.sse_handler = self.sse_handler  # type: ignore[assignment]
-            self.proxy_server.others_handler = self.others_handler  # type: ignore[assignment]
+            self.proxy_server.flow_router = self.flow_router  # type: ignore[assignment]
+            self.proxy_server.normal_handler = self.normal_handler  # type: ignore[assignment]
 
             # 注入 V4 模块到代理服务器
             self.proxy_server.websocket_handler = self.websocket_handler  # type: ignore[assignment]
+
+            # 注入 WebSocket 处理器到 FlowRouter
+            if self.websocket_handler:
+                self.flow_router.set_websocket_handler(self.websocket_handler)
+
+            # 注入 session 到 FlowRouter 和 NormalHandler
+            if self.flow_router:
+                self.flow_router.set_session(self.proxy_server.session)
+            if self.normal_handler:
+                self.normal_handler.set_session(self.proxy_server.session)
+                self.normal_handler.set_url_handler(self.proxy_server.url_handler)
+                self.normal_handler.set_cookie_handler(self.proxy_server.cookie_handler)
+                self.normal_handler.set_ua_handler(self.proxy_server.ua_handler)
+
+            # 注入 V2 组件到 NormalHandler
+            if self.normal_handler:
+                self.normal_handler.set_connection_pool(self.connection_pool)
+                self.normal_handler.set_thread_pool(self.thread_pool)
+                self.normal_handler.set_cache_manager(self.cache_manager)
+                self.normal_handler.set_script_injector(self.script_injector)
 
             self.logger.info(f"代理服务器配置: {proxy_host}:{proxy_port}")
 
@@ -432,51 +452,10 @@ class SilkRoad:
                 report_lines.append("流处理器统计报告")
                 report_lines.append("=" * 60)
                 
-                if self.stream_handler:
-                    stats = self.stream_handler.get_stats()
+                if self.flow_router:
+                    stats = self.flow_router.get_stats()
                     report_lines.append(
-                        f"StreamHandler: 总流数={stats.get('total_streams', 0)} | "
-                        f"活跃流数={stats.get('active_streams', 0)} | "
-                        f"媒体流={stats.get('media_streams', 0)} | "
-                        f"SSE流={stats.get('sse_streams', 0)} | "
-                        f"传输字节={stats.get('bytes_transferred', 0)} | "
-                        f"错误={stats.get('errors', 0)}"
-                    )
-                
-                if self.others_handler:
-                    stats = self.others_handler.get_stats()
-                    report_lines.append(
-                        f"OthersHandler: 总流数={stats.get('total_streams', 0)} | "
-                        f"分块流={stats.get('chunked_streams', 0)} | "
-                        f"Multipart流={stats.get('multipart_streams', 0)} | "
-                        f"传输字节={stats.get('bytes_transferred', 0)} | "
-                        f"流量整形次数={stats.get('rate_limited', 0)} | "
-                        f"错误={stats.get('errors', 0)}"
-                    )
-                    
-                    if stats.get('enable_rate_limit'):
-                        report_lines.append(
-                            f"流量整形: 已启用 | "
-                            f"最大速率={stats.get('max_rate', 0)} bytes/s"
-                        )
-                    else:
-                        report_lines.append("流量整形: 未启用")
-                
-                if self.media_handler:
-                    stats = self.media_handler.get_stats()
-                    report_lines.append(
-                        f"MediaHandler: 总流数={stats.get('total_streams', 0)} | "
-                        f"传输字节={stats.get('bytes_transferred', 0)} | "
-                        f"错误={stats.get('errors', 0)}"
-                    )
-                
-                if self.sse_handler:
-                    stats = self.sse_handler.get_stats()
-                    report_lines.append(
-                        f"SSEHandler: 总连接数={stats.get('total_connections', 0)} | "
-                        f"活跃连接数={stats.get('active_connections', 0)} | "
-                        f"事件数={stats.get('events_sent', 0)} | "
-                        f"错误={stats.get('errors', 0)}"
+                        f"FlowRouter: {stats}"
                     )
                 
                 # 连接池统计与维护（V2）
@@ -578,16 +557,16 @@ class SilkRoad:
 
             # ========== 关闭 V3 模块 ==========
             # 5. 关闭 SSE 连接
-            if self.sse_handler:
+            if self.flow_router and self.flow_router.stream_handler and self.flow_router.stream_handler.sse_handler:
                 self.logger.info("[5/13] 关闭 SSE 连接...")
-                sse_connections = await self.sse_handler.get_active_connections()
-                sse_count = await self.sse_handler.close_all_connections()
+                sse_handler = self.flow_router.stream_handler.sse_handler
+                sse_count = await sse_handler.close_all_connections()
                 self.logger.info(f"已关闭 {sse_count} 个 SSE 连接")
 
             # 6. 关闭流处理器
-            if self.stream_handler:
+            if self.flow_router and self.flow_router.stream_handler:
                 self.logger.info("[6/13] 关闭流处理器...")
-                count = await self.stream_handler.close_all_streams()
+                count = await self.flow_router.stream_handler.close_all_streams()
                 self.logger.info(f"已关闭 {count} 个活跃流")
 
             # ========== 关闭 V2 模块 ==========
@@ -613,10 +592,11 @@ class SilkRoad:
 
             # ========== 关闭 V1 模块 ==========
             # 11. 清理 SSE 缓存
-            if self.sse_handler:
+            if self.flow_router and self.flow_router.stream_handler and self.flow_router.stream_handler.sse_handler:
                 self.logger.info("[11/13] 清理 SSE 缓存...")
-                for stream_id in list((await self.sse_handler.get_active_connections()).keys()):
-                    await self.sse_handler.clear_cache(stream_id)
+                sse_handler = self.flow_router.stream_handler.sse_handler
+                for stream_id in list((await sse_handler.get_active_connections()).keys()):
+                    await sse_handler.clear_cache(stream_id)
                 self.logger.info("SSE 缓存已清理")
 
             # 12. 停止代理服务器

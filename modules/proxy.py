@@ -12,9 +12,7 @@ Version: 1.0.0
 """
 
 import asyncio
-import gzip
 import json
-import zlib
 from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING
 from urllib.parse import urlsplit, urljoin
 import aiohttp
@@ -33,11 +31,9 @@ if TYPE_CHECKING:
     from modules.sessions import SessionManager
     from modules.cachemanager import CacheManager
     from modules.blacklist import BlacklistManager
-    from modules.stream.handle import StreamHandler
-    from modules.stream.media import MediaHandler
-    from modules.stream.sse import SSEHandler
-    from modules.stream.others import OthersHandler
-    from modules.websockets import WebSocketHandler
+    from modules.flow.router import FlowRouter
+    from modules.flow.normal import NormalHandler
+    from modules.flow.websocket import WebSocketHandler
 
 
 class ProxyServer:
@@ -97,10 +93,8 @@ class ProxyServer:
         self.script_injector: Optional['ScriptInjector'] = None
 
         # V3 新增流处理器属性
-        self.stream_handler: Optional['StreamHandler'] = None
-        self.media_handler: Optional['MediaHandler'] = None
-        self.sse_handler: Optional['SSEHandler'] = None
-        self.others_handler: Optional['OthersHandler'] = None
+        self.flow_router: Optional['FlowRouter'] = None
+        self.normal_handler: Optional['NormalHandler'] = None
 
         # V4 新增组件属性
         self.websocket_handler: Optional['WebSocketHandler'] = None
@@ -273,6 +267,13 @@ class ProxyServer:
                 await self._send_error(writer, 404, "Command Interface Disabled")
                 return
 
+        try:
+            headers = await self._parse_headers(reader)
+        except Exception as e:
+            self.logger.warning(f"解析请求头失败: {e}")
+            await self._send_error(writer, 400, "Bad Request")
+            return
+
         # 检查是否为静态页面请求
         static_result = await self.page_server.handle_request(path, headers)
         if static_result:
@@ -303,13 +304,6 @@ class ProxyServer:
                 content, mime_type = static_result
                 await self._send_static_response(writer, content, mime_type)
                 return
-
-        try:
-            headers = await self._parse_headers(reader)
-        except Exception as e:
-            self.logger.warning(f"解析请求头失败: {e}")
-            await self._send_error(writer, 400, "Bad Request")
-            return
 
         # 3. 解析目标 URL
         target_url = self._parse_target_url(path, headers)
@@ -364,7 +358,8 @@ class ProxyServer:
 
             if cached_data is not None:
                 self.logger.debug(f"缓存命中: {target_url}")
-                await self._send_cached_response(writer, cached_data, target_url)
+                if self.normal_handler:
+                    await self.normal_handler._send_cached_response(writer, cached_data, target_url)
                 return
 
         # 4. 读取请求体（如果有）
@@ -392,29 +387,13 @@ class ProxyServer:
         # 5. 构建转发请求头
         forward_headers = self._build_forward_headers(headers, target_url)
 
-        # ========== V4: WebSocket 升级检查 ==========
-        if self.websocket_handler and self._is_websocket_upgrade(headers):
-            self.logger.info(f"检测到 WebSocket 升级请求，使用 V4 WebSocket 处理器: {target_url}")
-            await self.websocket_handler.handle_upgrade(
-                reader, writer, headers, target_url
-            )
-            return
-
-        # ========== V3: 流式请求检查 ==========
-        if self._is_stream_request(headers, target_url):
-            self.logger.info(f"检测到流式请求，使用 V3 流处理器: {target_url}")
-            await self._handle_stream_request(
-                writer, method, target_url, forward_headers, body
-            )
-            return
-
-        # ========== V1/V2: 传统请求处理 ==========
-        if self.connection_pool:
-            await self._forward_request_with_pool(
-                writer, method, target_url, forward_headers, body, session_id
+        if self.flow_router:
+            await self.flow_router.route(
+                writer, method, target_url, forward_headers, body,
+                session_id=session_id, reader=reader
             )
         else:
-            await self._forward_request(writer, method, target_url, forward_headers, body)
+            await self._send_error(writer, 502, "Bad Gateway: No flow router")
 
     def _parse_request_line(self, request_line: bytes) -> Tuple[str, str, str]:
         """
@@ -732,403 +711,6 @@ class ProxyServer:
         except Exception:
             return referer
 
-    async def _forward_request(self, writer: asyncio.StreamWriter,
-                                method: str, target_url: str,
-                                headers: Dict[str, str],
-                                body: Optional[bytes]) -> None:
-        """
-        转发请求到目标服务器
-
-        支持重定向处理，最多跟随 max_redirects 次重定向。
-
-        Args:
-            writer: 流写入器
-            method: HTTP 方法
-            target_url: 目标 URL
-            headers: 请求头
-            body: 请求体
-        """
-        assert self.session is not None
-        current_url = target_url
-        redirect_count = 0
-
-        while redirect_count <= self.max_redirects:
-            try:
-                # 发送请求
-                async with self.session.request(
-                    method,
-                    current_url,
-                    headers=headers,
-                    data=body,
-                    allow_redirects=False,  # 手动处理重定向
-                    ssl=False  # 允许自签名证书
-                ) as response:
-                    # 检查是否为重定向
-                    if response.status in [301, 302, 303, 307, 308]:
-                        redirect_count += 1
-
-                        if redirect_count > self.max_redirects:
-                            self.logger.warning(f"重定向次数过多: {redirect_count}")
-                            await self._send_error(writer, 508, "Loop Detected")
-                            return
-
-                        # 获取重定向 URL
-                        location = response.headers.get('Location')
-                        if not location:
-                            self.logger.warning("重定向响应缺少 Location 头")
-                            await self._send_error(writer, 502, "Bad Gateway")
-                            return
-
-                        # 解析重定向 URL
-                        current_url = self._resolve_redirect_url(current_url, location)
-                        self.logger.debug(f"重定向到: {current_url}")
-
-                        # 更新 Host 头
-                        parsed = urlsplit(current_url)
-                        headers['Host'] = parsed.netloc
-
-                        # 303 重定向需要改为 GET 方法
-                        if response.status == 303:
-                            method = 'GET'
-                            body = None
-
-                        continue
-
-                    # 正常响应，处理并发送
-                    await self._send_response(writer, response, current_url)
-                    return
-
-            except asyncio.TimeoutError:
-                self.logger.error(f"请求超时: {current_url}")
-                await self._send_error(writer, 504, "Gateway Timeout")
-                return
-
-            except aiohttp.ClientError as e:
-                self.logger.error(f"目标服务器错误 [{current_url}]: {e}")
-                await self._send_error(writer, 502, "Bad Gateway")
-                return
-
-            except Exception as e:
-                self.logger.error(f"转发请求失败 [{current_url}]: {e}")
-                await self._send_error(writer, 500, "Internal Server Error")
-                return
-
-        # 超过最大重定向次数
-        self.logger.warning(f"重定向次数超过限制: {redirect_count}")
-        await self._send_error(writer, 508, "Loop Detected")
-
-    async def _forward_request_with_pool(self, writer: asyncio.StreamWriter,
-                                          method: str, target_url: str,
-                                          headers: Dict[str, str],
-                                          body: Optional[bytes],
-                                          session_id: Optional[str] = None) -> None:
-        """
-        使用连接池转发请求（V2 功能 + V5 会话持久化）
-
-        从连接池获取连接，发送请求到目标服务器，处理响应后归还连接。
-        如果连接池已满，则降级到 V1 方式。
-
-        Args:
-            writer: 流写入器
-            method: HTTP 方法
-            target_url: 目标 URL
-            headers: 请求头
-            body: 请求体
-            session_id: 会话 ID（V5 会话持久化）
-        """
-        assert self.connection_pool is not None
-        parsed = urlsplit(target_url)
-        host = parsed.netloc
-        port = 443 if parsed.scheme == 'https' else 80
-        is_https = parsed.scheme == 'https'
-
-        try:
-            # 从连接池获取连接（支持会话持久化）
-            connection = await self.connection_pool.get_connection(
-                host, port, is_https, session_id
-            )
-
-            if connection is None:
-                # 没有可用连接，创建新连接
-                connector = aiohttp.TCPConnector(
-                    limit=100,
-                    ttl_dns_cache=300,
-                    enable_cleanup_closed=True
-                )
-                
-                # 注册新连接到连接池管理
-                self.connection_pool.register_connection(host, port, connector)
-                
-                session = aiohttp.ClientSession(
-                    connector=connector,
-                    timeout=aiohttp.ClientTimeout(
-                        total=self.request_timeout,
-                        connect=self.timeout
-                    )
-                )
-            else:
-                # 复用现有连接
-                session = aiohttp.ClientSession(
-                    connector=connection,
-                    timeout=aiohttp.ClientTimeout(
-                        total=self.request_timeout,
-                        connect=self.timeout
-                    )
-                )
-            
-            # V5: 获取会话 Cookie 并添加到请求头
-            request_headers = headers.copy()
-            if session_id:
-                session_cookies = self.connection_pool.get_session_cookies()
-                if session_cookies:
-                    # 将 Cookie 字典转换为请求头格式
-                    cookie_header = '; '.join(
-                        f"{name}={value}" for name, value in session_cookies.items()
-                    )
-                    # 合并现有 Cookie 或添加新 Cookie
-                    if 'Cookie' in request_headers:
-                        request_headers['Cookie'] = f"{request_headers['Cookie']}; {cookie_header}"
-                    else:
-                        request_headers['Cookie'] = cookie_header
-                    self.logger.debug(
-                        f"V5 会话持久化: 添加 {len(session_cookies)} 个 Cookie 到请求"
-                    )
-
-            try:
-                # 发送请求
-                async with session.request(
-                    method,
-                    target_url,
-                    headers=request_headers,
-                    data=body,
-                    allow_redirects=False,
-                    ssl=False
-                ) as response:
-                    # 处理响应
-                    content = await response.read()
-
-                    # ========== V2: 使用线程池处理 CPU 密集型任务 ==========
-                    if self.thread_pool:
-                        # 在线程池中解压缩
-                        content = await self.thread_pool.run_in_thread(
-                            self._decompress_content_sync,
-                            content,
-                            response.headers.get('Content-Encoding'),
-                            timeout=10.0
-                        )
-                    else:
-                        # V1 方式解压缩
-                        content = await self._decompress_content(
-                            content,
-                            response.headers.get('Content-Encoding')
-                        )
-
-                    # URL 修正（异步方法，不在线程池中执行）
-                    content_type = response.headers.get('Content-Type', '')
-                    if self._should_rewrite(content_type):
-                        try:
-                            content = await self.url_handler.rewrite(
-                                content, content_type, target_url
-                            )
-                        except Exception as e:
-                            self.logger.error(f"URL 修正失败: {e}")
-
-                    # ========== V2: 脚本注入（异步方法，不在线程池中执行）==========
-                    self.logger.debug(f"脚本注入检查: script_injector={self.script_injector is not None}, content_type={content_type}")
-                    if self.script_injector and 'text/html' in content_type:
-                        try:
-                            self.logger.info(f"开始脚本注入: {target_url}")
-                            # 将字节解码为字符串
-                            encoding = 'utf-8'
-                            if isinstance(content, bytes):
-                                # 尝试从 content_type 获取编码
-                                if 'charset=' in content_type:
-                                    charset = content_type.split('charset=')[-1].split(';')[0].strip()
-                                    if charset:
-                                        encoding = charset
-                                content_str = content.decode(encoding, errors='ignore')
-                            else:
-                                content_str = content
-                            
-                            # 注入脚本
-                            content_str = await self.script_injector.inject_scripts(
-                                content_str, target_url, content_type
-                            )
-                            
-                            # 编码回字节
-                            if isinstance(content, bytes):
-                                content = content_str.encode(encoding, errors='ignore')
-                            else:
-                                content = content_str
-                            
-                            self.logger.info(f"脚本注入完成: {target_url}")
-                        except Exception as e:
-                            import traceback
-                            self.logger.error(f"脚本注入失败: {e}\n{traceback.format_exc()}")
-
-                    # 压缩内容
-                    content, encoding = await self._compress_content(content)
-
-                    # 构建响应头
-                    response_headers = dict(response.headers)
-                    response_headers['Content-Length'] = str(len(content))
-                    if encoding and encoding != 'identity':
-                        response_headers['Content-Encoding'] = encoding
-                    else:
-                        response_headers.pop('Content-Encoding', None)
-
-                    response_headers['Via'] = 'SilkRoad-Next/2.0'
-                    response_headers.pop('Transfer-Encoding', None)
-                    
-                    # V5: 保存响应中的 Cookie 到会话持久化管理器
-                    if session_id and 'Set-Cookie' in response_headers:
-                        try:
-                            # 解析 Set-Cookie 头
-                            set_cookie_header = response_headers.get('Set-Cookie', '')
-                            if set_cookie_header:
-                                # 简单解析 Cookie（实际应用中可能需要更复杂的解析）
-                                cookies = {}
-                                for cookie_str in set_cookie_header.split(','):
-                                    if '=' in cookie_str:
-                                        cookie_parts = cookie_str.strip().split(';')[0]
-                                        if '=' in cookie_parts:
-                                            name, value = cookie_parts.split('=', 1)
-                                            cookies[name.strip()] = {
-                                                'value': value.strip(),
-                                                'domain': host
-                                            }
-                                
-                                if cookies:
-                                    # 保存到会话持久化管理器
-                                    session_data = self.connection_pool.session_manager.load_session(session_id) or {}
-                                    session_data.setdefault('cookies', {}).update(cookies)
-                                    self.connection_pool.session_manager.save_session(session_id, session_data)
-                                    self.logger.debug(
-                                        f"V5 会话持久化: 保存 {len(cookies)} 个 Cookie 到会话 {session_id}"
-                                    )
-                        except Exception as e:
-                            self.logger.warning(f"保存会话 Cookie 失败: {e}")
-                    response_headers.pop('Content-Security-Policy', None)
-                    response_headers.pop('Content-Security-Policy-Report-Only', None)
-
-                    # 重写重定向相关的响应头 URL
-                    if 'Location' in response_headers:
-                        response_headers['Location'] = self.url_handler.rewrite_location_header(
-                            response_headers['Location'], target_url
-                        )
-                        self.logger.debug(f"Location 头重写（连接池）: {response_headers['Location']}")
-
-                    if 'Content-Location' in response_headers:
-                        response_headers['Content-Location'] = self.url_handler.rewrite_content_location_header(
-                            response_headers['Content-Location'], target_url
-                        )
-
-                    if 'Refresh' in response_headers:
-                        response_headers['Refresh'] = self.url_handler.location_handler.rewrite_refresh_header(
-                            response_headers['Refresh'], target_url
-                        )
-
-                    # 处理 Cookie
-                    target_domain = self.cookie_handler.extract_domain_from_url(target_url)
-                    set_cookie_values = None
-                    if 'Set-Cookie' in response_headers:
-                        set_cookie_values = response_headers.pop('Set-Cookie')
-                    elif 'set-cookie' in response_headers:
-                        set_cookie_values = response_headers.pop('set-cookie')
-
-                    # 发送响应
-                    status_line = f"HTTP/1.1 {response.status} {response.reason}\r\n"
-                    writer.write(status_line.encode('utf-8'))
-
-                    for key, value in response_headers.items():
-                        if key.lower() in ['transfer-encoding', 'set-cookie']:
-                            continue
-                        writer.write(f"{key}: {value}\r\n".encode('utf-8'))
-
-                    if set_cookie_values and target_domain:
-                        if isinstance(set_cookie_values, str):
-                            set_cookie_values = [set_cookie_values]
-
-                        for cookie_value in set_cookie_values:
-                            rewritten_cookie = self.cookie_handler.rewrite_set_cookie(
-                                cookie_value, target_domain
-                            )
-                            writer.write(f"Set-Cookie: {rewritten_cookie}\r\n".encode('utf-8'))
-
-                    writer.write(b"\r\n")
-                    writer.write(content)
-                    await writer.drain()
-
-                    self.logger.debug(f"响应已发送（连接池）: {response.status} {len(content)} bytes")
-
-                    # ========== V2: 缓存响应 ==========
-                    if self.cache_manager and method == 'GET':
-                        await self.cache_manager.set(
-                            target_url, content, method, headers,
-                            ttl=self.config.get('cache.defaultTTL', 3600)
-                        )
-
-            finally:
-                # 归还连接
-                await self.connection_pool.return_connection(
-                    host, port, session.connector
-                )
-                await session.close()
-
-        except ConnectionError as e:
-            # 连接池已满，降级到 V1 方式
-            self.logger.warning(f"连接池已满，降级到 V1 方式: {e}")
-            await self._forward_request(writer, method, target_url, headers, body)
-
-        except asyncio.TimeoutError:
-            self.logger.error(f"请求超时: {target_url}")
-            await self._send_error(writer, 504, "Gateway Timeout")
-
-        except aiohttp.ClientError as e:
-            self.logger.error(f"目标服务器错误 [{target_url}]: {e}")
-            await self._send_error(writer, 502, "Bad Gateway")
-
-        except Exception as e:
-            self.logger.error(f"转发请求失败 [{target_url}]: {e}")
-            await self._send_error(writer, 500, "Internal Server Error")
-
-    def _decompress_content_sync(self, content: bytes, encoding: Optional[str]) -> bytes:
-        """
-        同步解压缩响应内容（用于线程池）
-
-        Args:
-            content: 压缩的内容
-            encoding: 压缩编码（gzip 或 deflate）
-
-        Returns:
-            解压缩后的内容
-        """
-        if not encoding:
-            return content
-
-        encoding = encoding.lower()
-
-        if encoding not in ('gzip', 'deflate', 'x-gzip'):
-            return content
-
-        try:
-            if encoding in ('gzip', 'x-gzip'):
-                if len(content) < 2:
-                    return content
-                if content[:2] != b'\x1f\x8b':
-                    return content
-                return gzip.decompress(content)
-            elif encoding == 'deflate':
-                if len(content) < 2:
-                    return content
-                return zlib.decompress(content)
-            else:
-                return content
-
-        except Exception as e:
-            self.logger.debug(f"解压缩失败，使用原始内容: {e}")
-            return content
-
     def _resolve_redirect_url(self, base_url: str, location: str) -> str:
         """
         解析重定向 URL
@@ -1153,476 +735,6 @@ class ProxyServer:
 
         # 相对路径 URL
         return urljoin(base_url, location)
-
-    async def _send_cached_response(self, writer: asyncio.StreamWriter,
-                                     cached_data: bytes,
-                                     target_url: str) -> None:
-        """
-        发送缓存的响应给客户端（V2 功能）
-
-        构建响应头和响应体，发送给客户端。
-
-        Args:
-            writer: 流写入器
-            cached_data: 缓存的数据
-            target_url: 目标 URL
-        """
-        try:
-            # 压缩内容
-            content, encoding = await self._compress_content(cached_data)
-
-            # 构建响应头
-            headers = {
-                'Content-Type': 'text/html; charset=utf-8',
-                'Content-Length': str(len(content)),
-                'Connection': 'keep-alive',
-                'Via': 'SilkRoad-Next/2.0 (cached)',
-                'X-Cache': 'HIT'
-            }
-
-            if encoding and encoding != 'identity':
-                headers['Content-Encoding'] = encoding
-
-            # 发送响应
-            status_line = "HTTP/1.1 200 OK\r\n"
-            writer.write(status_line.encode('utf-8'))
-
-            for key, value in headers.items():
-                writer.write(f"{key}: {value}\r\n".encode('utf-8'))
-
-            writer.write(b"\r\n")
-            writer.write(content)
-            await writer.drain()
-
-            self.logger.debug(f"缓存响应已发送: {len(content)} bytes")
-
-        except Exception as e:
-            self.logger.error(f"发送缓存响应失败: {e}")
-            raise
-
-    async def _send_response(self, writer: asyncio.StreamWriter,
-                              response: aiohttp.ClientResponse,
-                              target_url: str) -> None:
-        """
-        发送响应给客户端
-
-        处理响应体、解压缩、URL修正、重新压缩等。
-
-        Args:
-            writer: 流写入器
-            response: 目标服务器的响应对象
-            target_url: 目标 URL
-        """
-        try:
-            content_length = int(response.headers.get('Content-Length', 0))
-
-            if content_length > self.stream_threshold:
-                await self._stream_response(writer, response)
-                return
-
-            content = await response.read()
-
-            content = await self._decompress_content(
-                content,
-                response.headers.get('Content-Encoding')
-            )
-
-            content_type = response.headers.get('Content-Type', '')
-            if self._should_rewrite(content_type):
-                try:
-                    content = await self.url_handler.rewrite(
-                        content,
-                        content_type,
-                        target_url
-                    )
-                except Exception as e:
-                    self.logger.error(f"URL 修正失败: {e}")
-
-            content, encoding = await self._compress_content(content)
-
-            headers = dict(response.headers)
-
-            headers['Content-Length'] = str(len(content))
-            if encoding and encoding != 'identity':
-                headers['Content-Encoding'] = encoding
-            else:
-                headers.pop('Content-Encoding', None)
-
-            headers['Via'] = 'SilkRoad-Next/1.0'
-
-            headers.pop('Transfer-Encoding', None)
-            headers.pop('Content-Security-Policy', None)
-            headers.pop('Content-Security-Policy-Report-Only', None)
-
-            # 重写重定向相关的响应头 URL
-            if 'Location' in headers:
-                headers['Location'] = self.url_handler.rewrite_location_header(
-                    headers['Location'], target_url
-                )
-                self.logger.debug(f"Location 头重写: {headers['Location']}")
-
-            if 'Content-Location' in headers:
-                headers['Content-Location'] = self.url_handler.rewrite_content_location_header(
-                    headers['Content-Location'], target_url
-                )
-
-            if 'Refresh' in headers:
-                headers['Refresh'] = self.url_handler.location_handler.rewrite_refresh_header(
-                    headers['Refresh'], target_url
-                )
-
-            target_domain = self.cookie_handler.extract_domain_from_url(target_url)
-
-            set_cookie_values = None
-            if 'Set-Cookie' in headers:
-                set_cookie_values = headers.pop('Set-Cookie')
-            elif 'set-cookie' in headers:
-                set_cookie_values = headers.pop('set-cookie')
-
-            status_line = f"HTTP/1.1 {response.status} {response.reason}\r\n"
-            writer.write(status_line.encode('utf-8'))
-
-            for key, value in headers.items():
-                if key.lower() in ['transfer-encoding', 'set-cookie']:
-                    continue
-                writer.write(f"{key}: {value}\r\n".encode('utf-8'))
-
-            if set_cookie_values and target_domain:
-                if isinstance(set_cookie_values, str):
-                    set_cookie_values = [set_cookie_values]
-                
-                for cookie_value in set_cookie_values:
-                    rewritten_cookie = self.cookie_handler.rewrite_set_cookie(
-                        cookie_value, target_domain
-                    )
-                    writer.write(f"Set-Cookie: {rewritten_cookie}\r\n".encode('utf-8'))
-
-            writer.write(b"\r\n")
-
-            writer.write(content)
-            await writer.drain()
-
-            self.logger.debug(f"响应已发送: {response.status} {len(content)} bytes")
-
-        except Exception as e:
-            self.logger.error(f"发送响应失败: {e}")
-            raise
-
-    async def _stream_response(self, writer: asyncio.StreamWriter,
-                                response: aiohttp.ClientResponse) -> None:
-        """
-        流式传输大文件响应
-
-        对于大文件（>10MB），直接流式传输，不进行 URL 修正。
-
-        Args:
-            writer: 流写入器
-            response: 目标服务器的响应对象
-        """
-        try:
-            status_line = f"HTTP/1.1 {response.status} {response.reason}\r\n"
-            writer.write(status_line.encode('utf-8'))
-
-            for key, value in response.headers.items():
-                key_lower = key.lower()
-                if key_lower in ['transfer-encoding', 'content-security-policy', 'content-security-policy-report-only', 'set-cookie']:
-                    continue
-
-                # 重写重定向相关的响应头 URL
-                if key_lower == 'location':
-                    value = self.url_handler.rewrite_location_header(value, '')
-                elif key_lower == 'content-location':
-                    value = self.url_handler.rewrite_content_location_header(value, '')
-                elif key_lower == 'refresh':
-                    value = self.url_handler.location_handler.rewrite_refresh_header(value, '')
-
-                writer.write(f"{key}: {value}\r\n".encode('utf-8'))
-
-            writer.write(b"Via: SilkRoad-Next/1.0\r\n")
-
-            writer.write(b"\r\n")
-
-            chunk_size = 8192
-            total_bytes = 0
-
-            async for chunk in response.content.iter_chunked(chunk_size):
-                writer.write(chunk)
-                await writer.drain()
-                total_bytes += len(chunk)
-
-            self.logger.info(f"流式传输完成: {total_bytes} bytes")
-
-        except Exception as e:
-            self.logger.error(f"流式传输失败: {e}")
-            raise
-
-    async def _decompress_content(self, content: bytes,
-                                   encoding: Optional[str]) -> bytes:
-        """
-        解压缩响应内容
-
-        支持 gzip 和 deflate 压缩格式。
-        注意：aiohttp 默认会自动解压，此方法作为备用检查。
-
-        Args:
-            content: 压缩的内容
-            encoding: 压缩编码（gzip 或 deflate）
-
-        Returns:
-            解压缩后的内容
-        """
-        if not encoding:
-            return content
-
-        encoding = encoding.lower()
-
-        if encoding not in ('gzip', 'deflate', 'x-gzip'):
-            self.logger.debug(f"不支持的压缩格式: {encoding}")
-            return content
-
-        try:
-            if encoding in ('gzip', 'x-gzip'):
-                if len(content) < 2:
-                    return content
-                if content[:2] != b'\x1f\x8b':
-                    self.logger.debug(f"内容非gzip格式，跳过解压")
-                    return content
-                return gzip.decompress(content)
-            elif encoding == 'deflate':
-                if len(content) < 2:
-                    return content
-                return zlib.decompress(content)
-            else:
-                return content
-
-        except Exception as e:
-            self.logger.debug(f"解压缩失败，使用原始内容: {e}")
-            return content
-
-    async def _compress_content(self, content: bytes) -> Tuple[bytes, str]:
-        """
-        压缩响应内容
-
-        使用 gzip 压缩内容。
-
-        Args:
-            content: 原始内容
-
-        Returns:
-            (压缩后的内容, 压缩编码) 元组
-        """
-        # 检查是否启用压缩
-        if not self.config.get('proxy.enableCompression', True):
-            return content, 'identity'
-
-        # 检查内容大小，小内容不压缩
-        if len(content) < 1024:  # 小于 1KB 不压缩
-            return content, 'identity'
-
-        try:
-            # 使用 gzip 压缩
-            compression_level = self.config.get('proxy.compressionLevel', 6)
-            compressed = gzip.compress(content, compresslevel=compression_level)
-
-            # 只有压缩后更小才使用压缩
-            if len(compressed) < len(content):
-                return compressed, 'gzip'
-            else:
-                return content, 'identity'
-
-        except Exception as e:
-            self.logger.error(f"压缩失败: {e}")
-            return content, 'identity'
-
-    def _should_rewrite(self, content_type: str) -> bool:
-        """
-        判断是否需要进行 URL 修正
-
-        根据内容类型判断是否需要修正 URL。
-
-        Args:
-            content_type: 内容类型
-
-        Returns:
-            是否需要修正
-        """
-        if not content_type:
-            return False
-
-        # 检查是否启用 URL 重写
-        if not self.config.get('urlRewrite.enabled', True):
-            return False
-
-        # 需要处理的内容类型
-        process_types = self.config.get('urlRewrite.processContentTypes', [
-            'text/html',
-            'text/css',
-            'text/javascript',
-            'application/javascript',
-            'application/x-javascript',
-            'text/xml',
-            'application/xml',
-            'application/json',
-            'application/xhtml+xml'
-        ])
-
-        # 检查是否匹配
-        content_type_lower = content_type.lower()
-        for ct in process_types:
-            if ct in content_type_lower:
-                return True
-
-        return False
-
-    def _is_stream_request(self, headers: Dict[str, str], url: str) -> bool:
-        """
-        判断是否为流式请求（V3 功能）
-
-        根据请求头和 URL 判断是否为流式请求，包括：
-        1. Content-Type 检查（video/*, audio/*, text/event-stream 等）
-        2. Range 请求头检查
-        3. URL 后缀检查（.mp4, .mp3, .m3u8 等）
-
-        Args:
-            headers: 请求头字典
-            url: 请求 URL
-
-        Returns:
-            是否为流式请求
-        """
-        if not self.config.get('stream.enabled', False):
-            return False
-
-        if not self.stream_handler:
-            return False
-
-        content_type = headers.get('Content-Type', '').lower()
-        stream_types = [
-            'video/',
-            'audio/',
-            'application/octet-stream',
-            'text/event-stream',
-            'multipart/x-mixed-replace',
-            'application/x-mpegurl',
-            'application/vnd.apple.mpegurl'
-        ]
-
-        for stream_type in stream_types:
-            if stream_type in content_type:
-                self.logger.debug(f"检测到流式请求 (Content-Type): {content_type}")
-                return True
-
-        if 'Range' in headers:
-            self.logger.debug(f"检测到流式请求 (Range): {headers['Range']}")
-            return True
-
-        stream_extensions = [
-            '.mp4', '.mp3', '.avi', '.mov', '.flv', '.m3u8',
-            '.ts', '.webm', '.ogg', '.mkv', '.wav', '.aac',
-            '.flac', '.m4a', '.m4v'
-        ]
-        url_lower = url.lower()
-        if any(url_lower.endswith(ext) for ext in stream_extensions):
-            self.logger.debug(f"检测到流式请求 (URL 后缀): {url}")
-            return True
-
-        return False
-
-    def _is_websocket_upgrade(self, headers: Dict[str, str]) -> bool:
-        """
-        判断是否为 WebSocket 升级请求（V4 功能）
-
-        根据请求头判断是否为 WebSocket 升级请求：
-        1. Upgrade: websocket
-        2. Connection: Upgrade
-        3. Sec-WebSocket-Key 存在
-
-        Args:
-            headers: 请求头字典
-
-        Returns:
-            是否为 WebSocket 升级请求
-        """
-        if not self.config.get('websocket.enabled', False):
-            return False
-
-        if not self.websocket_handler:
-            return False
-
-        upgrade = headers.get('Upgrade', '').lower()
-        connection = headers.get('Connection', '').lower()
-        has_key = 'Sec-WebSocket-Key' in headers
-
-        if upgrade == 'websocket' and 'upgrade' in connection and has_key:
-            self.logger.debug("检测到 WebSocket 升级请求")
-            return True
-
-        return False
-
-    async def _handle_stream_request(self,
-                                      writer: asyncio.StreamWriter,
-                                      method: str,
-                                      target_url: str,
-                                      headers: Dict[str, str],
-                                      body: Optional[bytes]) -> None:
-        """
-        处理流式请求（V3 功能）
-
-        使用流处理器处理流式请求，支持：
-        1. 媒体流（视频/音频）
-        2. Server-Sent Events (SSE)
-        3. 分块传输
-        4. 断点续传（Range 请求）
-
-        Args:
-            writer: 流写入器
-            method: HTTP 方法
-            target_url: 目标 URL
-            headers: 请求头
-            body: 请求体
-        """
-        assert self.session is not None
-
-        try:
-            self.logger.info(f"开始处理流式请求: {method} {target_url}")
-
-            # 发送请求到目标服务器
-            async with self.session.request(
-                method,
-                target_url,
-                headers=headers,
-                data=body,
-                allow_redirects=False,
-                ssl=False
-            ) as response:
-                # 使用流处理器处理响应
-                if self.stream_handler:
-                    await self.stream_handler.handle_stream(
-                        writer, response, target_url, headers
-                    )
-                else:
-                    # 降级到 V1 的简单流式传输
-                    self.logger.warning("流处理器未初始化，降级到 V1 流式传输")
-                    await self._stream_response(writer, response)
-
-        except asyncio.TimeoutError:
-            self.logger.error(f"流请求超时: {target_url}")
-            await self._send_error(writer, 504, "Gateway Timeout")
-
-        except aiohttp.ClientError as e:
-            self.logger.error(f"目标服务器错误 [{target_url}]: {e}")
-            await self._send_error(writer, 502, "Bad Gateway")
-
-        except ConnectionResetError:
-            self.logger.warning(f"连接被重置: {target_url}")
-            # 连接已重置，无法发送错误响应
-
-        except Exception as e:
-            self.logger.opt(exception=True).error(f"流请求处理失败 [{target_url}]: {e}")
-            try:
-                await self._send_error(writer, 502, "Bad Gateway")
-            except Exception:
-                pass
 
     async def _handle_command(self, writer: asyncio.StreamWriter,
                                path: str, method: str) -> None:
@@ -1806,7 +918,7 @@ class ProxyServer:
 
     async def get_stats(self) -> Dict[str, Any]:
         """
-        获取服务器统计信息（V1 + V2 + V3 + V4）
+        获取服务器统计信息
 
         Returns:
             包含服务器状态信息的字典
@@ -1820,7 +932,6 @@ class ProxyServer:
             'timeout': self.timeout,
             'request_timeout': self.request_timeout,
             'max_redirects': self.max_redirects,
-            # V2 组件状态
             'v2_components': {
                 'connection_pool': self.connection_pool is not None,
                 'thread_pool': self.thread_pool is not None,
@@ -1829,20 +940,12 @@ class ProxyServer:
                 'blacklist_manager': self.blacklist_manager is not None,
                 'script_injector': self.script_injector is not None
             },
-            # V3 组件状态
-            'v3_components': {
-                'stream_handler': self.stream_handler is not None,
-                'media_handler': self.media_handler is not None,
-                'sse_handler': self.sse_handler is not None,
-                'others_handler': self.others_handler is not None
-            },
-            # V4 组件状态
-            'v4_components': {
-                'websocket_handler': self.websocket_handler is not None
+            'flow_components': {
+                'flow_router': self.flow_router is not None,
+                'normal_handler': self.normal_handler is not None,
             }
         }
 
-        # 添加 V2 组件统计信息
         if self.connection_pool:
             try:
                 stats['connection_pool'] = await self.connection_pool.get_stats()
@@ -1879,37 +982,11 @@ class ProxyServer:
             except Exception as e:
                 self.logger.warning(f"获取脚本注入统计信息失败: {e}")
 
-        # 添加 V3 组件统计信息
-        if self.stream_handler:
+        if self.flow_router:
             try:
-                stats['stream'] = self.stream_handler.get_stats()
+                stats['flow'] = self.flow_router.get_stats()
             except Exception as e:
-                self.logger.warning(f"获取流处理统计信息失败: {e}")
-
-        if self.media_handler:
-            try:
-                stats['media'] = self.media_handler.get_stats()
-            except Exception as e:
-                self.logger.warning(f"获取媒体流统计信息失败: {e}")
-
-        if self.sse_handler:
-            try:
-                stats['sse'] = self.sse_handler.get_stats()
-            except Exception as e:
-                self.logger.warning(f"获取 SSE 统计信息失败: {e}")
-
-        if self.others_handler:
-            try:
-                stats['others'] = self.others_handler.get_stats()
-            except Exception as e:
-                self.logger.warning(f"获取其他流统计信息失败: {e}")
-
-        # 添加 V4 组件统计信息
-        if self.websocket_handler:
-            try:
-                stats['websocket'] = self.websocket_handler.get_stats()
-            except Exception as e:
-                self.logger.warning(f"获取 WebSocket 统计信息失败: {e}")
+                self.logger.warning(f"获取流量路由统计信息失败: {e}")
 
         return stats
 
@@ -1920,53 +997,9 @@ class ProxyServer:
         Returns:
             包含各处理器重置状态的字典
         """
-        results = {
-            'stream': False,
-            'media': False,
-            'sse': False,
-            'others': False
-        }
-        
-        try:
-            if self.stream_handler:
-                self.stream_handler.stats = {
-                    'total_streams': 0,
-                    'active_streams': 0,
-                    'media_streams': 0,
-                    'sse_streams': 0,
-                    'bytes_transferred': 0,
-                    'errors': 0
-                }
-                results['stream'] = True
-                self.logger.info("StreamHandler 统计信息已重置")
-        except Exception as e:
-            self.logger.error(f"重置 StreamHandler 统计信息失败: {e}")
-        
-        try:
-            if self.media_handler:
-                self.media_handler.reset_stats()
-                results['media'] = True
-                self.logger.info("MediaHandler 统计信息已重置")
-        except Exception as e:
-            self.logger.error(f"重置 MediaHandler 统计信息失败: {e}")
-        
-        try:
-            if self.sse_handler:
-                self.sse_handler.reset_stats()
-                results['sse'] = True
-                self.logger.info("SSEHandler 统计信息已重置")
-        except Exception as e:
-            self.logger.error(f"重置 SSEHandler 统计信息失败: {e}")
-        
-        try:
-            if self.others_handler:
-                self.others_handler.reset_stats()
-                results['others'] = True
-                self.logger.info("OthersHandler 统计信息已重置")
-        except Exception as e:
-            self.logger.error(f"重置 OthersHandler 统计信息失败: {e}")
-        
-        return results
+        if self.flow_router:
+            return self.flow_router.reset_stream_stats()
+        return {'stream': False, 'media': False, 'sse': False, 'others': False}
 
     def set_stream_rate_limit(
         self, 
@@ -1983,39 +1016,9 @@ class ProxyServer:
         Returns:
             包含设置结果和当前配置的字典
         """
-        result = {
-            'success': False,
-            'enabled': enabled,
-            'max_rate': max_rate,
-            'previous_config': {},
-            'current_config': {}
-        }
-        
-        try:
-            if self.others_handler:
-                result['previous_config'] = {
-                    'enabled': self.others_handler.enable_rate_limit,
-                    'max_rate': self.others_handler.max_rate
-                }
-                
-                self.others_handler.set_rate_limit(enabled, max_rate)
-                
-                result['current_config'] = {
-                    'enabled': self.others_handler.enable_rate_limit,
-                    'max_rate': self.others_handler.max_rate
-                }
-                result['success'] = True
-                
-                self.logger.info(
-                    f"流量整形设置已更新: enabled={enabled}, "
-                    f"max_rate={self.others_handler.max_rate} bytes/s"
-                )
-            else:
-                self.logger.warning("OthersHandler 未初始化，无法设置流量整形")
-                
-        except Exception as e:
-            self.logger.error(f"设置流量整形参数失败: {e}")
-            
+        if self.flow_router:
+            return self.flow_router.set_stream_rate_limit(enabled, max_rate)
+        result = {'success': False, 'enabled': enabled, 'max_rate': max_rate, 'previous_config': {}, 'current_config': {}}
         return result
 
     def get_stream_rate_limit_status(self) -> Dict[str, Any]:
@@ -2025,21 +1028,6 @@ class ProxyServer:
         Returns:
             包含流量整形配置和统计信息的字典
         """
-        status = {
-            'enabled': False,
-            'max_rate': 0,
-            'stats': {}
-        }
-        
-        try:
-            if self.others_handler:
-                status['enabled'] = self.others_handler.enable_rate_limit
-                status['max_rate'] = self.others_handler.max_rate
-                status['stats'] = {
-                    'rate_limited_count': self.others_handler.stats.get('rate_limited', 0),
-                    'bytes_transferred': self.others_handler.stats.get('bytes_transferred', 0)
-                }
-        except Exception as e:
-            self.logger.error(f"获取流量整形状态失败: {e}")
-            
-        return status
+        if self.flow_router:
+            return self.flow_router.get_stream_rate_limit_status()
+        return {'enabled': False, 'max_rate': 0, 'stats': {}}

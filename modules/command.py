@@ -554,10 +554,10 @@ class CommandHandler:
                 self.logger.info(f"缓存已清除: {cleared_files} 个文件, "
                                f"{self._format_size(cleared_size)}")
 
-            if hasattr(self.proxy, 'sse_handler') and self.proxy.sse_handler:
-                sse_connections = await self.proxy.sse_handler.get_active_connections()
+            if self.proxy.flow_router and self.proxy.flow_router.stream_handler and self.proxy.flow_router.stream_handler.sse_handler:
+                sse_connections = await self.proxy.flow_router.stream_handler.sse_handler.get_active_connections()
                 for stream_id in list(sse_connections.keys()):
-                    await self.proxy.sse_handler.clear_cache(stream_id)
+                    await self.proxy.flow_router.stream_handler.sse_handler.clear_cache(stream_id)
                     sse_cleared_streams += 1
                 self.logger.info(f"SSE 缓存已清除: {sse_cleared_streams} 个流")
 
@@ -667,7 +667,7 @@ class CommandHandler:
             (status_code, response_dict) 元组
         """
         try:
-            if not hasattr(self.proxy, 'media_handler') or self.proxy.media_handler is None:
+            if not (self.proxy.flow_router and self.proxy.flow_router.stream_handler and self.proxy.flow_router.stream_handler.media_handler):
                 return 200, {
                     'status': 'success',
                     'message': '媒体处理器未启用',
@@ -675,8 +675,8 @@ class CommandHandler:
                     'timestamp': time.time()
                 }
             
-            cache_info = self.proxy.media_handler.get_cache_info()
-            media_stats = self.proxy.media_handler.get_stats()
+            cache_info = self.proxy.flow_router.stream_handler.media_handler.get_cache_info()
+            media_stats = self.proxy.flow_router.stream_handler.media_handler.get_stats()
             
             return 200, {
                 'status': 'success',
@@ -723,14 +723,14 @@ class CommandHandler:
             (status_code, response_dict) 元组
         """
         try:
-            if not hasattr(self.proxy, 'media_handler') or self.proxy.media_handler is None:
+            if not (self.proxy.flow_router and self.proxy.flow_router.stream_handler and self.proxy.flow_router.stream_handler.media_handler):
                 return 200, {
                     'status': 'success',
                     'message': '媒体处理器未启用，无需清除',
                     'timestamp': time.time()
                 }
             
-            cleared_bytes = await self.proxy.media_handler.clear_cache()
+            cleared_bytes = await self.proxy.flow_router.stream_handler.media_handler.clear_cache()
             
             self.logger.info(f"媒体缓存已清除: {self._format_size(cleared_bytes)}")
             
@@ -760,7 +760,7 @@ class CommandHandler:
             (status_code, response_dict) 元组
         """
         try:
-            if not hasattr(self.proxy, 'stream_handler') or self.proxy.stream_handler is None:
+            if not (self.proxy.flow_router and self.proxy.flow_router.stream_handler):
                 return 200, {
                     'status': 'success',
                     'message': '流处理器未启用',
@@ -768,7 +768,7 @@ class CommandHandler:
                     'timestamp': time.time()
                 }
             
-            stream_stats = self.proxy.stream_handler.get_stats()
+            stream_stats = self.proxy.flow_router.stream_handler.get_stats()
             
             return 200, {
                 'status': 'success',
@@ -793,15 +793,15 @@ class CommandHandler:
             (status_code, response_dict) 元组
         """
         try:
-            if not hasattr(self.proxy, 'stream_handler') or self.proxy.stream_handler is None:
+            if not (self.proxy.flow_router and self.proxy.flow_router.stream_handler):
                 return 200, {
                     'status': 'success',
                     'message': '流处理器未启用',
                     'timestamp': time.time()
                 }
             
-            if hasattr(self.proxy.stream_handler, 'reset_stats'):
-                self.proxy.stream_handler.reset_stats()
+            if hasattr(self.proxy.flow_router.stream_handler, 'reset_stats'):
+                self.proxy.flow_router.stream_handler.reset_stats()
             
             return 200, {
                 'status': 'success',
