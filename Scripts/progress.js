@@ -1,121 +1,141 @@
-/**
- * 进度条脚本 - SilkRoad Progress Bar
- * 
- * 功能：
- * 1. 在页面顶部显示加载进度条
- * 2. 模拟页面加载进度
- * 3. 加载完成后自动隐藏
- * 
- * 作者: SilkRoad-Next Team
- * 版本: 2.0.0
- */
-
+// SilkRoad自定义脚本 - 页面加载进度条
 (function() {
-    'use strict';
+    console.log('页面加载进度条');
     
-    // 避免重复创建
-    if (document.getElementById('silkroad-progress')) {
-        return;
-    }
+    // 在页面开始加载时立即执行
+    let startTime = Date.now();
+    let progressBar, progressContainer;
+    let loadingComplete = false;
+    let fadeOutTimeout;
     
-    // 创建进度条
-    function createProgressBar() {
-        // 创建进度条容器
-        const progressContainer = document.createElement('div');
-        progressContainer.id = 'silkroad-progress-container';
-        progressContainer.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 3px;
-            background: transparent;
-            z-index: 999999;
-            transition: opacity 0.3s ease;
-        `;
-        
-        // 创建进度条
-        const progressBar = document.createElement('div');
-        progressBar.id = 'silkroad-progress';
-        progressBar.style.cssText = `
-            width: 0%;
-            height: 100%;
-            background: linear-gradient(to right, #2196F3, #21CBF3, #2196F3);
-            background-size: 200% 100%;
-            animation: shimmer 1.5s infinite linear;
-            transition: width 0.3s ease;
-        `;
-        
-        // 添加动画样式
+    // 创建进度条样式
+    function createStyles() {
         const style = document.createElement('style');
         style.textContent = `
-            @keyframes shimmer {
-                0% { background-position: 200% 0; }
-                100% { background-position: -200% 0; }
+            .silkroad-progress-container {
+                position: fixed;
+                bottom: 0;
+                left: 0;
+                width: 100%;
+                height: 4px;
+                background-color: rgba(0, 0, 0, 0.1);
+                z-index: 10000;
+                pointer-events: none;
+                transition: opacity 0.5s ease;
+            }
+            
+            .silkroad-progress-bar {
+                height: 100%;
+                width: 0%;
+                background: linear-gradient(to right, #4cd964, #5ac8fa, #007aff, #34aadc, #5856d6, #ff2d55);
+                background-size: 500% 100%;
+                animation: silkroad-progress-animation 2s ease infinite;
+                transition: width 0.3s ease;
+                border-radius: 0 2px 2px 0;
+                box-shadow: 0 0 10px rgba(0, 120, 255, 0.5);
+            }
+            
+            @keyframes silkroad-progress-animation {
+                0% { background-position: 0% 50%; }
+                50% { background-position: 100% 50%; }
+                100% { background-position: 0% 50%; }
             }
         `;
         document.head.appendChild(style);
-        
-        progressContainer.appendChild(progressBar);
-        document.head.appendChild(progressContainer);
-        
-        // 模拟加载进度
-        let progress = 0;
-        let isComplete = false;
-        
-        const interval = setInterval(() => {
-            if (isComplete) {
-                clearInterval(interval);
-                return;
-            }
-            
-            // 使用非线性进度
-            const increment = Math.random() * 15 * (1 - progress / 100);
-            progress += increment;
-            
-            if (progress >= 100) {
-                progress = 100;
-                isComplete = true;
-                clearInterval(interval);
-                
-                // 加载完成，短暂停留后隐藏进度条
-                setTimeout(() => {
-                    progressContainer.style.opacity = '0';
-                    setTimeout(() => {
-                        progressContainer.remove();
-                    }, 300);
-                }, 500);
-            }
-            
-            progressBar.style.width = progress + '%';
-        }, 150);
-        
-        // 页面加载完成时快速完成进度
-        window.addEventListener('load', function() {
-            if (!isComplete) {
-                progress = 90;
-                progressBar.style.width = progress + '%';
-                
-                setTimeout(() => {
-                    progress = 100;
-                    progressBar.style.width = '100%';
-                    isComplete = true;
-                    
-                    setTimeout(() => {
-                        progressContainer.style.opacity = '0';
-                        setTimeout(() => {
-                            progressContainer.remove();
-                        }, 300);
-                    }, 500);
-                }, 200);
-            }
-        });
     }
     
-    // 页面加载时创建进度条
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', createProgressBar);
-    } else {
-        createProgressBar();
+    // 创建进度条DOM元素
+    function createProgressBar() {
+        progressContainer = document.createElement('div');
+        progressContainer.className = 'silkroad-progress-container';
+        
+        progressBar = document.createElement('div');
+        progressBar.className = 'silkroad-progress-bar';
+        
+        progressContainer.appendChild(progressBar);
+        document.body.appendChild(progressContainer);
     }
+    
+    // 更新进度条
+    function updateProgress(percent) {
+        if (!progressBar || loadingComplete) return;
+        
+        // 确保进度条平滑增长且不会后退
+        const currentWidth = parseFloat(progressBar.style.width) || 0;
+        if (percent > currentWidth) {
+            progressBar.style.width = percent + '%';
+        }
+        
+        // 当进度接近100%时，减缓增长速度
+        if (percent >= 90 && !loadingComplete) {
+            const remainingProgress = 100 - percent;
+            const slowIncrement = remainingProgress * 0.1;
+            
+            setTimeout(() => {
+                updateProgress(percent + slowIncrement);
+            }, 200);
+        }
+    }
+    
+    // 完成加载
+    function completeProgress() {
+        if (loadingComplete || !progressBar) return;
+        
+        loadingComplete = true;
+        progressBar.style.width = '100%';
+        
+        // 延迟后淡出进度条
+        clearTimeout(fadeOutTimeout);
+        fadeOutTimeout = setTimeout(() => {
+            progressContainer.style.opacity = '0';
+            setTimeout(() => {
+                if (progressContainer && progressContainer.parentNode) {
+                    progressContainer.parentNode.removeChild(progressContainer);
+                }
+            }, 500);
+        }, 300);
+    }
+    
+    // 模拟进度增长
+    function simulateProgress() {
+        const maxSimulatedProgress = 90; // 最大模拟进度
+        const loadTime = 10000; // 假设页面加载时间上限为10秒
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(maxSimulatedProgress, (elapsed / loadTime) * 100);
+        
+        updateProgress(progress);
+        
+        if (progress < maxSimulatedProgress && !loadingComplete) {
+            requestAnimationFrame(simulateProgress);
+        }
+    }
+    
+    // 初始化
+    function init() {
+        // 如果DOM已经加载，立即创建进度条
+        if (document.readyState === 'loading') {
+            createStyles();
+            document.addEventListener('DOMContentLoaded', () => {
+                createProgressBar();
+                simulateProgress();
+            });
+        } else {
+            createStyles();
+            createProgressBar();
+            simulateProgress();
+        }
+        
+        // 监听页面加载完成事件
+        window.addEventListener('load', () => {
+            completeProgress();
+        });
+        
+        // 如果页面加载时间过长，确保进度条最终会完成
+        setTimeout(() => {
+            completeProgress();
+        }, 15000);
+    }
+    
+    // 启动进度条
+    init();
 })();

@@ -231,11 +231,12 @@ class SilkRoad:
             if self.config.get('v2.scripts.enabled', False):
                 from modules.scripts import ScriptInjector
                 self.script_injector = ScriptInjector(
-                    config_file=self.config.get('v2.scripts.configFile', 'databases/scripts.json')
+                    config_file=self.config.get('v2.scripts.configFile', 'databases/scripts.json'),
+                    scripts_dir=self.config.get('v2.scripts.scriptsDir', 'Scripts')
                 )
                 # 加载脚本配置
                 await self.script_injector.load_config()
-                self.logger.info("脚本注入器已启用")
+                self.logger.info(f"脚本注入器已启用，已加载 {len(self.script_injector._script_cache)} 个脚本")
 
             # ========== V3 初始化 ==========
             # 9. 初始化流处理器
