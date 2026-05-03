@@ -315,11 +315,11 @@ class SilkRoad:
             if self.websocket_handler and self.flow_router:
                 self.flow_router.set_websocket_handler(self.websocket_handler)
 
-            # 注入 session 到 FlowRouter 和 NormalHandler
             if self.flow_router and self.proxy_server.session:
                 self.flow_router.set_session(self.proxy_server.session)
-            if self.normal_handler and self.proxy_server.session:
-                self.normal_handler.set_session(self.proxy_server.session)
+            if self.normal_handler:
+                if self.proxy_server.session:
+                    self.normal_handler.set_session(self.proxy_server.session)
                 self.normal_handler.set_url_handler(self.proxy_server.url_handler)
                 self.normal_handler.set_cookie_handler(self.proxy_server.cookie_handler)
                 self.normal_handler.set_ua_handler(self.proxy_server.ua_handler)
