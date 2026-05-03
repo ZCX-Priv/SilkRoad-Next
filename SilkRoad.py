@@ -20,7 +20,6 @@ from modules.logging import Logger
 from modules.proxy import ProxyServer
 from modules.command import CommandHandler
 from modules.exit import GracefulExit
-from modules.wafpasser import WAFPasser, WAFDetector
 
 
 class SilkRoad:
@@ -107,9 +106,6 @@ class SilkRoad:
         # ========== V4 新增组件 ==========
         # WebSocket 处理器（用于处理 WebSocket 协议）
         self.websocket_handler = None
-
-        # 流量控制器（用于请求调度和带宽管理）
-        self.traffic_controller = None
 
         # ========== V5 新增组件 ==========
         # WAF 穿透模块（用于 WAF 检测和绕过）
@@ -198,7 +194,8 @@ class SilkRoad:
                     session_timeout=self.config.get('v2.session.timeout', 1800),
                     cleanup_interval=self.config.get('v2.session.cleanupInterval', 60)
                 )
-                asyncio.create_task(self.session_manager.start_cleanup_task())
+                task = asyncio.create_task(self.session_manager.start_cleanup_task())
+                GracefulExit.register_task(task)
                 self.logger.info("会话管理器已启用")
 
             # 6. 初始化缓存管理器
@@ -209,12 +206,14 @@ class SilkRoad:
                     max_memory_cache_size=self.config.get('cache.maxSize', 1073741824),
                     default_ttl=self.config.get('cache.defaultTTL', 3600)
                 )
-                asyncio.create_task(self._cache_cleanup_task())
+                task = asyncio.create_task(self._cache_cleanup_task())
+                GracefulExit.register_task(task)
                 
                 if self.config.get('cache.warmupOnStart', False):
                     warmup_urls = self.config.get('cache.warmupUrls', [])
                     if warmup_urls:
-                        asyncio.create_task(self._cache_warmup_task(warmup_urls))
+                        task = asyncio.create_task(self._cache_warmup_task(warmup_urls))
+                        GracefulExit.register_task(task)
                         self.logger.info(f"缓存预热任务已安排，共 {len(warmup_urls)} 个 URL")
                 
                 self.logger.info("缓存管理器已启用")
@@ -279,32 +278,8 @@ class SilkRoad:
                 self.websocket_handler = WebSocketHandler(self.config, self.logger)  # type: ignore[arg-type]
                 self.logger.info("WebSocket 处理器已启用")
 
-            # 11. 初始化流量控制器
-            print("[11/15] 初始化流量控制器...")
-            if self.config.get('trafficControl.enabled', False):
-                from modules.controler import TrafficController
-                
-                self.traffic_controller = TrafficController(self.config, self.logger)  # type: ignore[arg-type]
-                
-                asyncio.create_task(self.traffic_controller.start_scheduler())
-                self.logger.info("流量控制器已启用")
-
-            # ========== V5 初始化 ==========
-            # 12. 初始化 WAF 穿透模块
-            print("[12/15] 初始化 WAF 穿透模块...")
-            if self.config.get('waf_evasion.enabled', False):
-                self.waf_passer = WAFPasser()
-                self.waf_detector = WAFDetector(self.waf_passer)
-                
-                # 输出 WAF 穿透启用状态
-                waf_types_count = len(self.waf_passer.waf_signatures)
-                strategies_count = len(self.waf_passer.evasion_strategies)
-                self.logger.info(f"WAF 穿透模块已启用 | 支持的 WAF 类型: {waf_types_count} | 绕过策略: {strategies_count}")
-            else:
-                self.logger.info("WAF 穿透模块未启用")
-
             # ========== 创建代理服务器 ==========
-            print("[13/15] 创建代理服务器...")
+            print("[11/13] 创建代理服务器...")
             proxy_host = self.config.get('server.proxy.host', '0.0.0.0')
             proxy_port = self.config.get('server.proxy.port', 8080)
 
@@ -331,11 +306,6 @@ class SilkRoad:
 
             # 注入 V4 模块到代理服务器
             self.proxy_server.websocket_handler = self.websocket_handler  # type: ignore[assignment]
-            self.proxy_server.traffic_controller = self.traffic_controller  # type: ignore[assignment]
-
-            # 注入 V5 模块到代理服务器
-            self.proxy_server.waf_passer = self.waf_passer  # type: ignore[assignment]
-            self.proxy_server.waf_detector = self.waf_detector  # type: ignore[assignment]
 
             self.logger.info(f"代理服务器配置: {proxy_host}:{proxy_port}")
 
@@ -509,6 +479,39 @@ class SilkRoad:
                         f"错误={stats.get('errors', 0)}"
                     )
                 
+                # 连接池统计与维护（V2）
+                if self.connection_pool:
+                    try:
+                        # 执行健康检查
+                        health = await self.connection_pool.health_check()
+                        report_lines.append(
+                            f"ConnectionPool: 总连接={health.get('total_connections', 0)} | "
+                            f"有效连接={health.get('valid_connections', 0)} | "
+                            f"过期连接={health.get('expired_connections', 0)} | "
+                            f"活跃连接={health.get('active_connections', 0)} | "
+                            f"复用率={health.get('reuse_rate', 0):.1f}%"
+                        )
+                        
+                        # 清理过期连接
+                        cleaned = await self.connection_pool.cleanup_expired_connections()
+                        if cleaned > 0:
+                            report_lines.append(f"连接池清理: 已清理 {cleaned} 个过期连接")
+                        
+                        # 健康状态警告
+                        if not health.get('healthy', True):
+                            self.logger.warning(
+                                f"连接池健康检查异常: 存在 {health.get('expired_connections', 0)} 个过期连接"
+                            )
+                    except Exception as e:
+                        report_lines.append(f"ConnectionPool: 获取统计信息失败 - {e}")
+                
+                # 活动任务监控
+                active_task_count = GracefulExit.get_active_task_count()
+                report_lines.append(
+                    f"GracefulExit: 活动任务数={active_task_count} | "
+                    f"初始化状态={GracefulExit.is_initialized()}"
+                )
+                
                 report_lines.append("=" * 60)
                 
                 for line in report_lines:
@@ -526,16 +529,17 @@ class SilkRoad:
         等待关闭信号
 
         阻塞等待关闭事件被触发，然后执行优雅关闭流程（V1 + V2 + V3 + V4 + V5）：
-        1. 关闭 WebSocket 连接（V4）
-        2. 停止流量控制器（V4）
-        3. 关闭 WAF 穿透模块（V5）
-        4. 关闭流处理器（V3）
-        5. 关闭连接池（V2）
-        6. 关闭线程池（V2）
-        7. 保存会话数据（V2）
-        8. 清理缓存（V2）
-        9. 停止代理服务器（V1）
-        10. 关闭日志系统（V1）
+        1. 等待所有活动任务完成
+        2. 关闭 WebSocket 连接（V4）
+        3. 停止流量控制器（V4）
+        4. 关闭 WAF 穿透模块（V5）
+        5. 关闭流处理器（V3）
+        6. 关闭连接池（V2）
+        7. 关闭线程池（V2）
+        8. 保存会话数据（V2）
+        9. 清理缓存（V2）
+        10. 停止代理服务器（V1）
+        11. 关闭日志系统（V1）
         """
         await self.shutdown_event.wait()
 
@@ -547,83 +551,81 @@ class SilkRoad:
         self.logger.info("=" * 60)
 
         try:
+            # 等待所有活动任务完成
+            self.logger.info("[0/13] 等待活动任务完成...")
+            await GracefulExit.wait_for_tasks(timeout=30)
             # 停止配置文件监听
             self.config.stop_watching()
-            self.logger.info("[0/12] 配置文件监听已停止")
+            self.logger.info("[1/13] 配置文件监听已停止")
             
             # ========== 关闭 V4 模块 ==========
-            # 1. 关闭 WebSocket 连接
+            # 2. 关闭 WebSocket 连接
             if self.websocket_handler:
-                self.logger.info("[1/12] 关闭 WebSocket 连接...")
+                self.logger.info("[2/13] 关闭 WebSocket 连接...")
                 connections = await self.websocket_handler.get_active_connections()
                 for conn in connections:
                     await self.websocket_handler.close_connection(conn.connection_id)
                 self.logger.info(f"已关闭 {len(connections)} 个 WebSocket 连接")
 
-            # 2. 停止流量控制器
-            if self.traffic_controller:
-                self.logger.info("[2/12] 停止流量控制器...")
-                # 流量控制器无需特殊关闭
-
             # ========== 关闭 V5 模块 ==========
             # 3. 关闭 WAF 穿透模块
             if self.waf_passer:
-                self.logger.info("[3/12] 关闭 WAF 穿透模块...")
+                self.logger.info("[3/11] 关闭 WAF 穿透模块...")
                 # WAF 穿透模块无需特殊关闭，清理引用即可
                 self.waf_passer = None
                 self.waf_detector = None
                 self.logger.info("WAF 穿透模块已关闭")
 
             # ========== 关闭 V3 模块 ==========
-            # 4. 关闭 SSE 连接
+            # 5. 关闭 SSE 连接
             if self.sse_handler:
-                self.logger.info("[4/12] 关闭 SSE 连接...")
+                self.logger.info("[5/13] 关闭 SSE 连接...")
                 sse_connections = await self.sse_handler.get_active_connections()
                 sse_count = await self.sse_handler.close_all_connections()
                 self.logger.info(f"已关闭 {sse_count} 个 SSE 连接")
 
-            # 5. 关闭流处理器
+            # 6. 关闭流处理器
             if self.stream_handler:
-                self.logger.info("[5/12] 关闭流处理器...")
+                self.logger.info("[6/13] 关闭流处理器...")
                 count = await self.stream_handler.close_all_streams()
                 self.logger.info(f"已关闭 {count} 个活跃流")
 
             # ========== 关闭 V2 模块 ==========
-            # 6. 关闭连接池
+            # 7. 关闭连接池
             if self.connection_pool:
-                self.logger.info("[6/12] 关闭连接池...")
+                self.logger.info("[7/13] 关闭连接池...")
                 await self.connection_pool.close_all()
 
-            # 7. 关闭线程池
+            # 8. 关闭线程池
             if self.thread_pool:
-                self.logger.info("[7/12] 关闭线程池...")
+                self.logger.info("[8/13] 关闭线程池...")
                 self.thread_pool.shutdown()
 
-            # 8. 保存会话数据
+            # 9. 保存会话数据
             if self.session_manager:
-                self.logger.info("[8/12] 保存会话数据...")
+                self.logger.info("[9/13] 保存会话数据...")
                 await self.session_manager.save_to_file('sessions_backup.json')
 
-            # 9. 清理缓存
+            # 10. 清理缓存
             if self.cache_manager:
-                self.logger.info("[9/12] 清理缓存...")
+                self.logger.info("[10/13] 清理缓存...")
                 await self.cache_manager.clear_all()
 
             # ========== 关闭 V1 模块 ==========
-            # 10. 清理 SSE 缓存
+            # 11. 清理 SSE 缓存
             if self.sse_handler:
-                self.logger.info("[10/12] 清理 SSE 缓存...")
+                self.logger.info("[11/13] 清理 SSE 缓存...")
                 for stream_id in list((await self.sse_handler.get_active_connections()).keys()):
                     await self.sse_handler.clear_cache(stream_id)
                 self.logger.info("SSE 缓存已清理")
 
-            # 11. 停止代理服务器
+            # 12. 停止代理服务器
             if self.proxy_server:
-                self.logger.info("[11/12] 停止代理服务器...")
+                self.logger.info("[12/13] 停止代理服务器...")
                 await self.proxy_server.stop()
 
-            # 12. 关闭日志系统
-            self.logger.info("[12/12] 关闭日志系统...")
+            # 13. 关闭日志系统
+            self.logger.info("[13/13] 关闭日志系统...")
             await self.logger.close()
 
             print()
@@ -675,12 +677,6 @@ class SilkRoad:
             if self.thread_pool:
                 max_workers = self.config.get('performance.threadPool.maxWorkers', 4)
                 self.logger.info(f"线程池配置已更新: maxWorkers={max_workers}")
-            
-            # 更新流量控制配置
-            if self.traffic_controller:
-                max_bandwidth = self.config.get('trafficControl.maxBandwidth', 104857600)
-                max_connections = self.config.get('trafficControl.maxConnections', 5000)
-                self.logger.info(f"流量控制配置已更新: maxBandwidth={max_bandwidth}, maxConnections={max_connections}")
             
             self.logger.info("=" * 60)
             self.logger.info("配置热重载完成")
@@ -774,9 +770,7 @@ class SilkRoad:
         print("│" + " " * 58 + "│")
         print("│  V4 新功能:".ljust(59) + "│")
         ws_status = "已启用" if self.config.get('websocket.enabled', False) else "未启用"
-        tc_status = "已启用" if self.config.get('trafficControl.enabled', False) else "未启用"
         print(f"│    WebSocket: {ws_status}".ljust(59) + "│")
-        print(f"│    流量控制: {tc_status}".ljust(59) + "│")
         print("│" + " " * 58 + "│")
         print("│  V5 新功能:".ljust(59) + "│")
         waf_status = "已启用" if self.config.get('waf_evasion.enabled', False) else "未启用"

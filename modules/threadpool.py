@@ -378,23 +378,22 @@ class ThreadPoolManager:
             if not callable(task[0]):
                 raise TypeError(f"Task {i} first element must be callable")
         
-        futures: List[asyncio.Future] = []
-        
+        futures: List[Any] = []
+
         for task in tasks:
-            # 解析任务参数
+            func = task[0]
             if len(task) == 2:
-                func, args = task
-                kwargs = {}
+                args = task[1]
+                kwargs: Dict[str, Any] = {}
             elif len(task) == 3:
-                func, args, kwargs = task
+                args = task[1]
+                kwargs = task[2]
             else:
                 raise ValueError(f"Task must have 2 or 3 elements, got {len(task)}")
-            
-            # 确保 args 是元组
+
             if not isinstance(args, tuple):
                 args = (args,)
-            
-            # 创建任务 Future
+
             future = self.run_in_thread(func, *args, timeout=timeout, **kwargs)
             futures.append(future)
         

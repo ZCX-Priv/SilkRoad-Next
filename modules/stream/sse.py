@@ -20,6 +20,7 @@ from loguru import logger as loguru_logger
 from dataclasses import dataclass, field
 
 from modules.stream import StreamContext
+from modules.exit import GracefulExit
 
 if TYPE_CHECKING:
     from modules.logging import Logger
@@ -232,6 +233,8 @@ class SSEHandler:
             heartbeat_task = asyncio.create_task(
                 self._heartbeat_loop(writer, context)
             )
+            if GracefulExit.is_initialized():
+                GracefulExit.register_task(heartbeat_task)
             
             # 解析并转发 SSE 事件
             event_count = 0

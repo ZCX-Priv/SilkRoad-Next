@@ -18,6 +18,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Callable, Optional
 
+from modules.exit import GracefulExit
+
 try:
     from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler, FileModifiedEvent
@@ -273,31 +275,6 @@ class ConfigManager:
                     "client-max-window-bits": 15,
                     "server-max-window-bits": 15
                 }
-            },
-            "trafficControl": {
-                "enabled": False,
-                "maxBandwidth": 104857600,
-                "maxConnections": 5000,
-                "requestQueue": {
-                    "enabled": True,
-                    "maxSize": 10000,
-                    "timeout": 30
-                },
-                "rateLimit": {
-                    "enabled": True,
-                    "requestsPerSecond": 1000,
-                    "burstSize": 100
-                },
-                "scheduling": {
-                    "algorithm": "priority",
-                    "priorities": {
-                        "websocket": 10,
-                        "media": 8,
-                        "sse": 7,
-                        "html": 5,
-                        "static": 3
-                    }
-                }
             }
         }
 
@@ -505,7 +482,9 @@ class ConfigManager:
         config_dict[keys[-1]] = value
 
         if save:
-            asyncio.create_task(self._save_config())
+            task = asyncio.create_task(self._save_config())
+            if GracefulExit.is_initialized():
+                GracefulExit.register_task(task)
 
     async def _save_config(self) -> None:
         """
@@ -575,8 +554,13 @@ class ConfigManager:
                         handler._last_modified = current_time
                         
                         if handler.config_manager._event_loop:
+                            def create_and_register_task():
+                                task = asyncio.create_task(handler.config_manager._on_file_changed())
+                                if GracefulExit.is_initialized():
+                                    GracefulExit.register_task(task)
+                            
                             handler.config_manager._event_loop.call_soon_threadsafe(
-                                lambda: asyncio.create_task(handler.config_manager._on_file_changed())
+                                create_and_register_task
                             )
             
             self._observer = Observer()

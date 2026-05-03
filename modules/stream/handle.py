@@ -8,7 +8,6 @@
 4. 流量控制与限速
 5. 错误处理与恢复
 6. 统计与监控
-7. WAF 检测与拦截处理 (V5)
 
 作者: SilkRoad-Next Team
 版本: 3.0.0
@@ -22,7 +21,6 @@ from typing import Optional, Dict, Any, TYPE_CHECKING
 from loguru import logger as loguru_logger
 
 from modules.stream import StreamType, StreamContext
-from modules.wafpasser import WAFDetector, WAFPasser
 
 if TYPE_CHECKING:
     from modules.logging import Logger
@@ -69,9 +67,6 @@ class StreamHandler:
         self.sse_handler = None
         self.others_handler = None
         
-        # WAF 检测器 (V5)
-        self.waf_detector = WAFDetector(WAFPasser())
-        
         # 活跃流管理
         self._active_streams: Dict[str, StreamContext] = {}
         self._lock = asyncio.Lock()
@@ -83,8 +78,7 @@ class StreamHandler:
             'media_streams': 0,
             'sse_streams': 0,
             'bytes_transferred': 0,
-            'errors': 0,
-            'waf_blocked': 0  # WAF 拦截统计
+            'errors': 0
         }
         
         # 配置参数（使用安全的 get 方法，提供默认值）
@@ -92,7 +86,7 @@ class StreamHandler:
         self.max_buffer_size = self._get_config('stream.media.maxBufferSize', 10485760)
         self.stream_timeout = self._get_config('stream.media.timeout', 3600)
         
-        self.logger.info("StreamHandler 初始化完成 (WAF 检测已启用)")
+        self.logger.info("StreamHandler 初始化完成")
     
     def _get_config(self, key: str, default: Any) -> Any:
         """
@@ -284,11 +278,6 @@ class StreamHandler:
         )
         
         try:
-            # WAF 检测 (V5)
-            if await self._is_stream_blocked(response):
-                await self._handle_stream_block(writer, response, context)
-                return
-            
             # 根据流类型路由到对应处理器
             if stream_type == StreamType.MEDIA and self.media_handler:
                 await self.media_handler.handle(
@@ -550,261 +539,3 @@ class StreamHandler:
         """
         await self.close_all_streams()
         return False
-    
-    async def _is_stream_blocked(
-        self,
-        response: aiohttp.ClientResponse
-    ) -> bool:
-        """
-        检测流媒体请求是否被 WAF 拦截
-        
-        检测逻辑:
-        1. 检查状态码是否为 403 或 503
-        2. 如果 Content-Type 是 text/html，读取前 1024 字节
-        3. 使用 waf_detector.is_blocked_response 检测
-        
-        Args:
-            response: 目标服务器响应对象
-            
-        Returns:
-            如果检测到 WAF 拦截则返回 True，否则返回 False
-        """
-        status_code = response.status
-        
-        # 检查状态码是否为常见的 WAF 拦截状态码
-        if status_code not in [403, 503]:
-            return False
-        
-        # 获取 Content-Type
-        content_type = response.headers.get('Content-Type', '').lower()
-        
-        # 如果是 HTML 响应，可能包含 WAF 拦截页面
-        if 'text/html' in content_type:
-            try:
-                # 读取前 1024 字节进行检测
-                # 注意：这会消耗响应流，需要特殊处理
-                preview = await response.content.read(1024)
-                
-                if preview:
-                    preview_text = preview.decode('utf-8', errors='ignore')
-                    
-                    # 使用 WAF 检测器判断是否被拦截
-                    is_blocked = self.waf_detector.is_blocked_response(
-                        dict(response.headers),
-                        preview_text,
-                        status_code
-                    )
-                    
-                    if is_blocked:
-                        self.logger.warning(
-                            f"WAF 拦截检测 | 状态码: {status_code} | "
-                            f"Content-Type: {content_type}"
-                        )
-                        return True
-                    
-            except Exception as e:
-                self.logger.error(f"WAF 检测时发生错误: {e}")
-                return False
-        
-        return False
-    
-    async def _handle_stream_block(
-        self,
-        writer: asyncio.StreamWriter,
-        response: aiohttp.ClientResponse,
-        context: StreamContext
-    ) -> None:
-        """
-        处理 WAF 拦截的流媒体请求
-        
-        处理流程:
-        1. 记录 WAF 拦截日志
-        2. 获取详细的 WAF 检测结果
-        3. 返回错误响应给客户端
-        
-        Args:
-            writer: 客户端写入器
-            response: 目标服务器响应对象
-            context: 流上下文
-        """
-        # 更新统计
-        self.stats['waf_blocked'] += 1
-        
-        # 获取详细的 WAF 检测结果
-        try:
-            preview = await response.content.read(1024)
-            preview_text = preview.decode('utf-8', errors='ignore') if preview else ''
-            
-            detection_result = self.waf_detector.detect_waf(
-                dict(response.headers),
-                preview_text,
-                response.status
-            )
-            
-            # 记录详细的 WAF 拦截日志
-            self.logger.warning(
-                f"WAF 拦截 | 流ID: {context.stream_id} | "
-                f"类型: {detection_result.waf_type.value} | "
-                f"置信度: {detection_result.confidence:.2f} | "
-                f"URL: {context.target_url} | "
-                f"检测方法: {', '.join(detection_result.detection_methods)} | "
-                f"拦截指标: {', '.join(detection_result.blocked_indicators)}"
-            )
-            
-        except Exception as e:
-            self.logger.error(f"获取 WAF 检测结果时发生错误: {e}")
-            detection_result = None
-        
-        # 构建错误响应
-        error_status = 502  # Bad Gateway
-        error_reason = "WAF Blocked"
-        error_body = self._generate_waf_error_page(context, detection_result)
-        
-        # 发送错误响应头
-        status_line = f"HTTP/1.1 {error_status} {error_reason}\r\n"
-        writer.write(status_line.encode('utf-8'))
-        
-        # 发送响应头
-        headers = {
-            'Content-Type': 'text/html; charset=utf-8',
-            'Content-Length': str(len(error_body)),
-            'Connection': 'close',
-            'X-WAF-Blocked': 'true'
-        }
-        
-        for key, value in headers.items():
-            writer.write(f"{key}: {value}\r\n".encode('utf-8'))
-        
-        # 添加代理标识
-        writer.write(b"Via: SilkRoad-Next/3.0 (WAF Detection Enabled)\r\n")
-        
-        # 结束响应头
-        writer.write(b"\r\n")
-        
-        # 发送错误页面内容
-        writer.write(error_body.encode('utf-8'))
-        await writer.drain()
-        
-        self.logger.info(
-            f"WAF 拦截响应已发送 | 流ID: {context.stream_id} | "
-            f"目标URL: {context.target_url}"
-        )
-    
-    def _generate_waf_error_page(
-        self,
-        context: StreamContext,
-        detection_result: Optional[Any]
-    ) -> str:
-        """
-        生成 WAF 拦截错误页面
-        
-        Args:
-            context: 流上下文
-            detection_result: WAF 检测结果（可选）
-            
-        Returns:
-            HTML 错误页面内容
-        """
-        waf_type = detection_result.waf_type.value if detection_result else "unknown"
-        confidence = f"{detection_result.confidence:.2f}" if detection_result else "0.00"
-        
-        error_page = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WAF Blocked - SilkRoad-Next</title>
-    <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            margin: 0;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            color: #e0e0e0;
-        }}
-        .container {{
-            text-align: center;
-            padding: 40px;
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 16px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-            max-width: 600px;
-        }}
-        .error-code {{
-            font-size: 72px;
-            font-weight: bold;
-            color: #e74c3c;
-            margin-bottom: 20px;
-        }}
-        .error-title {{
-            font-size: 24px;
-            margin-bottom: 16px;
-            color: #fff;
-        }}
-        .error-message {{
-            font-size: 16px;
-            color: #b0b0b0;
-            margin-bottom: 24px;
-            line-height: 1.6;
-        }}
-        .details {{
-            background: rgba(0, 0, 0, 0.2);
-            padding: 16px;
-            border-radius: 8px;
-            text-align: left;
-            font-size: 14px;
-        }}
-        .detail-item {{
-            margin: 8px 0;
-        }}
-        .detail-label {{
-            color: #888;
-        }}
-        .detail-value {{
-            color: #e0e0e0;
-            word-break: break-all;
-        }}
-        .footer {{
-            margin-top: 24px;
-            font-size: 12px;
-            color: #666;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="error-code">502</div>
-        <div class="error-title">WAF Blocked</div>
-        <div class="error-message">
-            The requested resource has been blocked by a Web Application Firewall (WAF).
-            <br>Please try again later or contact the administrator.
-        </div>
-        <div class="details">
-            <div class="detail-item">
-                <span class="detail-label">WAF Type: </span>
-                <span class="detail-value">{waf_type}</span>
-            </div>
-            <div class="detail-item">
-                <span class="detail-label">Confidence: </span>
-                <span class="detail-value">{confidence}</span>
-            </div>
-            <div class="detail-item">
-                <span class="detail-label">Stream ID: </span>
-                <span class="detail-value">{context.stream_id}</span>
-            </div>
-            <div class="detail-item">
-                <span class="detail-label">Target URL: </span>
-                <span class="detail-value">{context.target_url}</span>
-            </div>
-        </div>
-        <div class="footer">
-            SilkRoad-Next Proxy v3.0 | WAF Detection Enabled
-        </div>
-    </div>
-</body>
-</html>"""
-        
-        return error_page

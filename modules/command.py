@@ -24,6 +24,8 @@ from loguru import logger as loguru_logger
 
 import psutil
 
+from modules.exit import GracefulExit
+
 
 class CommandHandler:
     """
@@ -137,6 +139,14 @@ class CommandHandler:
             return await self._export_blacklist()
         elif path == '/command/blacklist/check':
             return await self._check_blacklist()
+        elif path == '/command/pool/status':
+            return await self._get_pool_status()
+        elif path.startswith('/command/pool/status/'):
+            return await self._get_pool_status_by_host(path)
+        elif path == '/command/pool/health':
+            return await self._get_pool_health()
+        elif path == '/command/pool/cleanup':
+            return await self._cleanup_pool()
         else:
             return 404, {
                 'status': 'error',
@@ -287,6 +297,22 @@ class CommandHandler:
             '/command/blacklist/check?ip=<ip>&url=<url>&domain=<domain>': {
                 'method': 'GET',
                 'description': '检查指定 IP/URL/域名是否被拦截'
+            },
+            '/command/pool/status': {
+                'method': 'GET',
+                'description': '获取连接池整体状态（连接数、复用率等）'
+            },
+            '/command/pool/status/{host:port}': {
+                'method': 'GET',
+                'description': '获取指定主机的连接池状态（如 /command/pool/status/example.com:443）'
+            },
+            '/command/pool/health': {
+                'method': 'GET',
+                'description': '获取连接池健康检查结果'
+            },
+            '/command/pool/cleanup': {
+                'method': 'POST',
+                'description': '手动清理连接池中的过期连接'
             }
         }
 
@@ -467,7 +493,8 @@ class CommandHandler:
         try:
             self.logger.info("接收到退出命令，准备优雅退出")
 
-            asyncio.create_task(self._delayed_exit())
+            task = asyncio.create_task(self._delayed_exit())
+            GracefulExit.register_task(task)
 
             return 200, {
                 'status': 'success',
@@ -1745,5 +1772,158 @@ class CommandHandler:
             return 500, {
                 'status': 'error',
                 'message': f'获取缓存统计信息失败: {str(e)}',
+                'timestamp': time.time()
+            }
+    
+    async def _get_pool_status(self) -> Tuple[int, Dict[str, Any]]:
+        """
+        获取连接池整体状态
+
+        Returns:
+            (status_code, response_dict) 元组
+        """
+        try:
+            if not hasattr(self.proxy, 'connection_pool') or self.proxy.connection_pool is None:
+                return 200, {
+                    'status': 'success',
+                    'message': '连接池未启用',
+                    'enabled': False,
+                    'timestamp': time.time()
+                }
+            
+            stats = await self.proxy.connection_pool.get_stats()
+            
+            return 200, {
+                'status': 'success',
+                'enabled': True,
+                'statistics': stats,
+                'timestamp': time.time()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"获取连接池状态时发生错误: {e}")
+            return 500, {
+                'status': 'error',
+                'message': f'获取连接池状态失败: {str(e)}',
+                'timestamp': time.time()
+            }
+    
+    async def _get_pool_status_by_host(self, path: str) -> Tuple[int, Dict[str, Any]]:
+        """
+        获取指定主机的连接池状态
+
+        Args:
+            path: 请求路径（如 /command/pool/status/example.com:443）
+
+        Returns:
+            (status_code, response_dict) 元组
+        """
+        try:
+            if not hasattr(self.proxy, 'connection_pool') or self.proxy.connection_pool is None:
+                return 200, {
+                    'status': 'success',
+                    'message': '连接池未启用',
+                    'enabled': False,
+                    'timestamp': time.time()
+                }
+            
+            # 从路径中提取 host:port
+            host_port = path.split('/command/pool/status/')[-1]
+            if ':' in host_port:
+                host, port_str = host_port.rsplit(':', 1)
+                port = int(port_str)
+            else:
+                host = host_port
+                port = 443
+            
+            status = await self.proxy.connection_pool.get_pool_status(host, port)
+            
+            return 200, {
+                'status': 'success',
+                'enabled': True,
+                'host': host,
+                'port': port,
+                'pool_status': status,
+                'timestamp': time.time()
+            }
+            
+        except ValueError as e:
+            return 400, {
+                'status': 'error',
+                'message': f'无效的主机或端口: {str(e)}',
+                'timestamp': time.time()
+            }
+        except Exception as e:
+            self.logger.error(f"获取指定主机连接池状态时发生错误: {e}")
+            return 500, {
+                'status': 'error',
+                'message': f'获取连接池状态失败: {str(e)}',
+                'timestamp': time.time()
+            }
+    
+    async def _get_pool_health(self) -> Tuple[int, Dict[str, Any]]:
+        """
+        获取连接池健康检查结果
+
+        Returns:
+            (status_code, response_dict) 元组
+        """
+        try:
+            if not hasattr(self.proxy, 'connection_pool') or self.proxy.connection_pool is None:
+                return 200, {
+                    'status': 'success',
+                    'message': '连接池未启用',
+                    'enabled': False,
+                    'timestamp': time.time()
+                }
+            
+            health = await self.proxy.connection_pool.health_check()
+            
+            return 200, {
+                'status': 'success',
+                'enabled': True,
+                'health': health,
+                'timestamp': time.time()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"获取连接池健康检查结果时发生错误: {e}")
+            return 500, {
+                'status': 'error',
+                'message': f'获取健康检查结果失败: {str(e)}',
+                'timestamp': time.time()
+            }
+    
+    async def _cleanup_pool(self) -> Tuple[int, Dict[str, Any]]:
+        """
+        手动清理连接池中的过期连接
+
+        Returns:
+            (status_code, response_dict) 元组
+        """
+        try:
+            if not hasattr(self.proxy, 'connection_pool') or self.proxy.connection_pool is None:
+                return 200, {
+                    'status': 'success',
+                    'message': '连接池未启用',
+                    'enabled': False,
+                    'timestamp': time.time()
+                }
+            
+            cleaned_count = await self.proxy.connection_pool.cleanup_expired_connections()
+            
+            return 200, {
+                'status': 'success',
+                'enabled': True,
+                'message': f'已清理 {cleaned_count} 个过期连接',
+                'cleaned_count': cleaned_count,
+                'timestamp': time.time()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"清理连接池时发生错误: {e}")
+            return 500, {
+                'status': 'error',
+                'message': f'清理连接池失败: {str(e)}',
                 'timestamp': time.time()
             }

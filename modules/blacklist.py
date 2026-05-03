@@ -22,6 +22,8 @@ from datetime import datetime
 from pathlib import Path
 import time
 
+from modules.exit import GracefulExit
+
 
 class BlacklistManager:
     """
@@ -572,6 +574,8 @@ class BlacklistManager:
         """
         if self._reload_task is None or self._reload_task.done():
             self._reload_task = asyncio.create_task(self._auto_reload_loop())
+            if GracefulExit.is_initialized():
+                GracefulExit.register_task(self._reload_task)
     
     async def stop_auto_reload(self) -> None:
         """

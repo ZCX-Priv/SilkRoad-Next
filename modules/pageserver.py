@@ -18,6 +18,7 @@ import mimetypes
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Set
 import asyncio
+from datetime import datetime, timezone
 from loguru import logger as loguru_logger
 
 
@@ -146,24 +147,36 @@ class PageServer:
 
         self.logger.debug(f"MIME类型初始化完成，已注册 {len(additional_types)} 种额外类型")
 
-    async def handle_request(self, path: str) -> Optional[Tuple[bytes, str]]:
+    async def handle_request(
+        self, 
+        path: str, 
+        headers: Optional[Dict[str, str]] = None
+    ) -> Optional[Tuple]:
         """
         处理静态文件请求
 
         根据请求路径匹配路由，查找并返回对应的静态文件内容。
-        支持默认首页和SPA应用路由。
+        支持默认首页、SPA应用路由、大文件流式传输、条件请求和范围请求。
 
         Args:
             path: 请求路径，如 "/" 或 "/admin/dashboard"
+            headers: 请求头字典，用于条件请求和范围请求
 
         Returns:
-            Optional[Tuple[bytes, str]]: 如果找到文件，返回 (文件内容, MIME类型)；
-                                         如果未找到，返回 None
+            Optional[Tuple]: 返回值类型：
+                - (content, mime_type): 普通文件内容
+                - ('STREAM', file_path, mime_type, file_size): 大文件流式传输
+                - ('NOT_MODIFIED',): 文件未修改（304）
+                - ('RANGE', file_path, mime_type, start, end, total_size): 范围请求
+                - None: 文件不存在或请求无效
 
         Examples:
-            >>> content, mime_type = await page_server.handle_request("/")
-            >>> print(mime_type)  # "text/html"
+            >>> result = await page_server.handle_request("/")
+            >>> if result[0] == 'STREAM':
+            ...     await page_server.handle_large_file(result[1], writer)
         """
+        if headers is None:
+            headers = {}
         # 1. 匹配路由
         route_name = self._match_route(path)
         if not route_name:
@@ -207,7 +220,45 @@ class PageServer:
             self.logger.warning(f"请求的不是文件: {file_path}")
             return None
 
-        # 7. 读取文件内容
+        # 7. 获取文件信息
+        try:
+            stat = file_path.stat()
+            file_size = stat.st_size
+            modified_time = stat.st_mtime
+        except OSError as e:
+            self.logger.error(f"获取文件信息失败: {file_path}, 错误: {e}")
+            return None
+
+        # 8. 获取MIME类型
+        mime_type = self._get_mime_type(file_path)
+
+        # 9. 处理条件请求（If-Modified-Since）
+        if 'If-Modified-Since' in headers:
+            try:
+                from email.utils import parsedate_to_datetime
+                if_modified_since = parsedate_to_datetime(headers['If-Modified-Since'])
+                file_mtime = datetime.fromtimestamp(modified_time, tz=timezone.utc)
+                
+                if file_mtime <= if_modified_since:
+                    self.logger.debug(f"文件未修改，返回 304: {file_path}")
+                    return ('NOT_MODIFIED',)
+            except Exception as e:
+                self.logger.warning(f"解析 If-Modified-Since 失败: {e}")
+
+        # 10. 处理范围请求（Range）
+        if 'Range' in headers:
+            range_result = self._parse_range_header(headers['Range'], file_size)
+            if range_result:
+                start, end = range_result
+                self.logger.debug(f"范围请求: {file_path} bytes {start}-{end}/{file_size}")
+                return ('RANGE', file_path, mime_type, start, end, file_size)
+
+        # 11. 检查是否为大文件，使用流式传输
+        if file_size > self.large_file_threshold:
+            self.logger.debug(f"大文件流式传输: {file_path} ({file_size} bytes)")
+            return ('STREAM', file_path, mime_type, file_size)
+
+        # 12. 读取小文件内容
         try:
             content = file_path.read_bytes()
         except PermissionError:
@@ -217,10 +268,7 @@ class PageServer:
             self.logger.error(f"读取文件失败: {file_path}, 错误: {e}")
             return None
 
-        # 8. 获取MIME类型
-        mime_type = self._get_mime_type(file_path)
-
-        self.logger.debug(f"静态文件服务: {path} -> {file_path} ({mime_type})")
+        self.logger.debug(f"静态文件服务: {path} -> {file_path} ({mime_type}, {file_size} bytes)")
 
         return content, mime_type
 
@@ -432,6 +480,85 @@ class PageServer:
 
         return True
 
+    def _parse_range_header(self, range_header: str, file_size: int) -> Optional[Tuple[int, int]]:
+        """
+        解析 Range 请求头
+
+        支持标准的 HTTP Range 头格式：
+        - bytes=0-499（前500字节）
+        - bytes=500-999（第二个500字节）
+        - bytes=500-（从500字节到文件末尾）
+        - bytes=-500（最后500字节）
+
+        Args:
+            range_header: Range 头的值
+            file_size: 文件总大小
+
+        Returns:
+            Optional[Tuple[int, int]]: (start, end) 字节范围，如果解析失败返回 None
+
+        Examples:
+            >>> page_server._parse_range_header("bytes=0-499", 1000)
+            (0, 499)
+            >>> page_server._parse_range_header("bytes=500-", 1000)
+            (500, 999)
+        """
+        try:
+            # 只支持 bytes 单位
+            if not range_header.startswith('bytes='):
+                return None
+
+            # 移除 "bytes=" 前缀
+            range_spec = range_header[6:].strip()
+
+            # 处理多个范围请求（只取第一个）
+            if ',' in range_spec:
+                range_spec = range_spec.split(',')[0].strip()
+
+            # 解析范围
+            if '-' not in range_spec:
+                return None
+
+            start_str, end_str = range_spec.split('-', 1)
+            start_str = start_str.strip()
+            end_str = end_str.strip()
+
+            # 转换为整数
+            if start_str == '':
+                # bytes=-500（最后500字节）
+                if not end_str:
+                    return None
+                suffix_length = int(end_str)
+                if suffix_length <= 0:
+                    return None
+                start = max(0, file_size - suffix_length)
+                end = file_size - 1
+            elif end_str == '':
+                # bytes=500-（从500字节到文件末尾）
+                start = int(start_str)
+                if start < 0:
+                    return None
+                end = file_size - 1
+            else:
+                # bytes=0-499
+                start = int(start_str)
+                end = int(end_str)
+                if start < 0 or end < 0 or start > end:
+                    return None
+
+            # 检查范围是否有效
+            if start >= file_size:
+                return None
+
+            # 限制 end 不超过文件大小
+            end = min(end, file_size - 1)
+
+            return (start, end)
+
+        except (ValueError, IndexError) as e:
+            self.logger.warning(f"解析 Range 头失败: {range_header}, 错误: {e}")
+            return None
+
     async def handle_large_file(
         self,
         file_path: Path,
@@ -546,6 +673,110 @@ class PageServer:
             return file_size > self.large_file_threshold
 
         except OSError:
+            return False
+
+    async def handle_range_request(
+        self,
+        file_path: Path,
+        writer: asyncio.StreamWriter,
+        start: int,
+        end: int,
+        total_size: int,
+        mime_type: str
+    ) -> bool:
+        """
+        处理范围请求（Range Request）
+
+        对于支持断点续传和视频拖动的场景，返回部分内容。
+
+        Args:
+            file_path: 文件路径
+            writer: asyncio StreamWriter 对象，用于写入响应
+            start: 起始字节位置
+            end: 结束字节位置
+            total_size: 文件总大小
+            mime_type: MIME类型
+
+        Returns:
+            bool: 传输是否成功
+
+        Examples:
+            >>> success = await page_server.handle_range_request(
+            ...     Path("video.mp4"), writer, 0, 499, 1000, "video/mp4"
+            ... )
+        """
+        # 检查文件是否存在
+        if not file_path.exists() or not file_path.is_file():
+            self.logger.error(f"范围请求失败：文件不存在 {file_path}")
+            return False
+
+        # 安全检查
+        if not self._is_safe_path(file_path):
+            self.logger.warning(f"范围请求失败：路径不安全 {file_path}")
+            return False
+
+        try:
+            # 计算内容长度
+            content_length = end - start + 1
+
+            # 构建响应头（206 Partial Content）
+            headers = [
+                "HTTP/1.1 206 Partial Content",
+                f"Content-Type: {mime_type}",
+                f"Content-Length: {content_length}",
+                f"Content-Range: bytes {start}-{end}/{total_size}",
+                "Connection: keep-alive",
+                "Accept-Ranges: bytes",
+                "",  # 空行分隔头部和正文
+            ]
+
+            # 发送响应头
+            header_bytes = "\r\n".join(headers).encode('utf-8')
+            writer.write(header_bytes)
+            await writer.drain()
+
+            # 流式读取并发送指定范围的内容
+            chunk_size = 65536  # 64KB 块大小
+            bytes_sent = 0
+
+            with open(file_path, 'rb') as f:
+                # 定位到起始位置
+                f.seek(start)
+
+                # 读取并发送指定范围的内容
+                remaining = content_length
+                while remaining > 0:
+                    # 计算本次读取的大小
+                    read_size = min(chunk_size, remaining)
+                    chunk = f.read(read_size)
+                    if not chunk:
+                        break
+
+                    writer.write(chunk)
+                    await writer.drain()
+
+                    bytes_sent += len(chunk)
+                    remaining -= len(chunk)
+
+            self.logger.debug(
+                f"范围请求完成: {file_path} "
+                f"bytes {start}-{end}/{total_size} "
+                f"({bytes_sent} bytes sent)"
+            )
+
+            return True
+
+        except PermissionError:
+            self.logger.error(f"范围请求失败：无权限读取文件 {file_path}")
+            return False
+        except ConnectionResetError:
+            self.logger.warning(f"范围请求中断：客户端断开连接 {file_path}")
+            return False
+        except OSError as e:
+            self.logger.error(f"范围请求失败：IO错误 {file_path}, 错误: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"范围请求失败：未知错误 {file_path}, 错误: {e}")
             return False
 
     def get_file_info(self, path: str) -> Optional[Dict[str, Any]]:

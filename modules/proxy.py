@@ -24,7 +24,6 @@ from modules.url.handle import URLHandler
 from modules.url.cookie import CookieHandler
 from modules.ua import UAHandler
 from modules.pageserver import PageServer
-from modules.wafpasser import WAFPasser, WAFDetector, RequestObfuscator
 
 if TYPE_CHECKING:
     from modules.command import CommandHandler
@@ -39,7 +38,6 @@ if TYPE_CHECKING:
     from modules.stream.sse import SSEHandler
     from modules.stream.others import OthersHandler
     from modules.websockets import WebSocketHandler
-    from modules.controler import TrafficController
 
 
 class ProxyServer:
@@ -106,12 +104,6 @@ class ProxyServer:
 
         # V4 新增组件属性
         self.websocket_handler: Optional['WebSocketHandler'] = None
-        self.traffic_controller: Optional['TrafficController'] = None
-
-        # V5 新增 WAF 穿透组件属性
-        self.waf_passer = WAFPasser()
-        self.waf_detector = WAFDetector(self.waf_passer)
-        self.request_obfuscator = RequestObfuscator(self.waf_passer)
 
         # 配置参数
         self.timeout = config.get('server.proxy.connectionTimeout', 30)
@@ -282,11 +274,35 @@ class ProxyServer:
                 return
 
         # 检查是否为静态页面请求
-        static_result = await self.page_server.handle_request(path)
+        static_result = await self.page_server.handle_request(path, headers)
         if static_result:
-            content, mime_type = static_result
-            await self._send_static_response(writer, content, mime_type)
-            return
+            # 处理不同类型的返回值
+            result_type = static_result[0]
+            
+            if result_type == 'STREAM':
+                # 大文件流式传输
+                _, file_path, mime_type, file_size = static_result
+                await self.page_server.handle_large_file(file_path, writer)
+                return
+            
+            elif result_type == 'NOT_MODIFIED':
+                # 文件未修改，返回 304
+                await self._send_304_response(writer)
+                return
+            
+            elif result_type == 'RANGE':
+                # 范围请求
+                _, file_path, mime_type, start, end, total_size = static_result
+                await self.page_server.handle_range_request(
+                    file_path, writer, start, end, total_size, mime_type
+                )
+                return
+            
+            else:
+                # 普通文件
+                content, mime_type = static_result
+                await self._send_static_response(writer, content, mime_type)
+                return
 
         try:
             headers = await self._parse_headers(reader)
@@ -321,6 +337,7 @@ class ProxyServer:
                 return
 
         # ========== V2: 会话管理 ==========
+        session_id = None
         if self.session_manager:
             from datetime import datetime
             session = await self.session_manager.get_session_by_ip(client_ip)
@@ -335,6 +352,7 @@ class ProxyServer:
                 self.logger.debug(f"创建新会话: {session_id} for {client_ip}")
             else:
                 # 更新会话
+                session_id = session['session_id']
                 await self.session_manager.update_session(
                     session['session_id'],
                     {'last_visit': datetime.now().isoformat()}
@@ -374,54 +392,29 @@ class ProxyServer:
         # 5. 构建转发请求头
         forward_headers = self._build_forward_headers(headers, target_url)
 
-        # ========== V4: 流量控制检查 ==========
-        if self.traffic_controller:
-            from modules.controler import RequestInfo, RequestPriority, create_request_info
-            
-            request_info = create_request_info(
-                url=target_url,
-                method=method,
-                content_type=headers.get('Content-Type', ''),
-                client_ip=client_ip,
-                metadata={'upgrade': headers.get('Upgrade', '')}
+        # ========== V4: WebSocket 升级检查 ==========
+        if self.websocket_handler and self._is_websocket_upgrade(headers):
+            self.logger.info(f"检测到 WebSocket 升级请求，使用 V4 WebSocket 处理器: {target_url}")
+            await self.websocket_handler.handle_upgrade(
+                reader, writer, headers, target_url
             )
-            
-            request_info.priority = self.traffic_controller.determine_priority(request_info)
-            
-            if not await self.traffic_controller.acquire(request_info):
-                self.logger.warning(f"请求被流量控制拒绝: {target_url}")
-                await self._send_error(writer, 503, "Service Unavailable")
-                return
+            return
+
+        # ========== V3: 流式请求检查 ==========
+        if self._is_stream_request(headers, target_url):
+            self.logger.info(f"检测到流式请求，使用 V3 流处理器: {target_url}")
+            await self._handle_stream_request(
+                writer, method, target_url, forward_headers, body
+            )
+            return
+
+        # ========== V1/V2: 传统请求处理 ==========
+        if self.connection_pool:
+            await self._forward_request_with_pool(
+                writer, method, target_url, forward_headers, body, session_id
+            )
         else:
-            request_info = None
-
-        try:
-            # ========== V4: WebSocket 升级检查 ==========
-            if self.websocket_handler and self._is_websocket_upgrade(headers):
-                self.logger.info(f"检测到 WebSocket 升级请求，使用 V4 WebSocket 处理器: {target_url}")
-                await self.websocket_handler.handle_upgrade(
-                    writer, headers, target_url
-                )
-                return
-
-            # ========== V3: 流式请求检查 ==========
-            if self._is_stream_request(headers, target_url):
-                self.logger.info(f"检测到流式请求，使用 V3 流处理器: {target_url}")
-                await self._handle_stream_request(
-                    writer, method, target_url, forward_headers, body
-                )
-                return
-
-            # ========== V1/V2: 传统请求处理 ==========
-            if self.connection_pool:
-                await self._forward_request_with_pool(writer, method, target_url, forward_headers, body)
-            else:
-                await self._forward_request(writer, method, target_url, forward_headers, body)
-        
-        finally:
-            # ========== V4: 释放流量控制 ==========
-            if self.traffic_controller and request_info:
-                await self.traffic_controller.release(request_info)
+            await self._forward_request(writer, method, target_url, forward_headers, body)
 
     def _parse_request_line(self, request_line: bytes) -> Tuple[str, str, str]:
         """
@@ -690,13 +683,6 @@ class ProxyServer:
                 forward_headers['Referer'], target_url
             )
 
-        # V5: WAF 穿透 - 请求头混淆
-        if self.waf_passer.is_waf_evasion_enabled():
-            forward_headers = self.request_obfuscator.obfuscate_headers(
-                forward_headers,
-                target_url
-            )
-
         return forward_headers
 
     def _rewrite_referer(self, referer: str, target_url: str) -> str:
@@ -834,9 +820,10 @@ class ProxyServer:
     async def _forward_request_with_pool(self, writer: asyncio.StreamWriter,
                                           method: str, target_url: str,
                                           headers: Dict[str, str],
-                                          body: Optional[bytes]) -> None:
+                                          body: Optional[bytes],
+                                          session_id: Optional[str] = None) -> None:
         """
-        使用连接池转发请求（V2 功能）
+        使用连接池转发请求（V2 功能 + V5 会话持久化）
 
         从连接池获取连接，发送请求到目标服务器，处理响应后归还连接。
         如果连接池已满，则降级到 V1 方式。
@@ -847,6 +834,7 @@ class ProxyServer:
             target_url: 目标 URL
             headers: 请求头
             body: 请求体
+            session_id: 会话 ID（V5 会话持久化）
         """
         assert self.connection_pool is not None
         parsed = urlsplit(target_url)
@@ -855,9 +843,9 @@ class ProxyServer:
         is_https = parsed.scheme == 'https'
 
         try:
-            # 从连接池获取连接
+            # 从连接池获取连接（支持会话持久化）
             connection = await self.connection_pool.get_connection(
-                host, port, is_https
+                host, port, is_https, session_id
             )
 
             if connection is None:
@@ -867,6 +855,10 @@ class ProxyServer:
                     ttl_dns_cache=300,
                     enable_cleanup_closed=True
                 )
+                
+                # 注册新连接到连接池管理
+                self.connection_pool.register_connection(host, port, connector)
+                
                 session = aiohttp.ClientSession(
                     connector=connector,
                     timeout=aiohttp.ClientTimeout(
@@ -883,13 +875,31 @@ class ProxyServer:
                         connect=self.timeout
                     )
                 )
+            
+            # V5: 获取会话 Cookie 并添加到请求头
+            request_headers = headers.copy()
+            if session_id:
+                session_cookies = self.connection_pool.get_session_cookies()
+                if session_cookies:
+                    # 将 Cookie 字典转换为请求头格式
+                    cookie_header = '; '.join(
+                        f"{name}={value}" for name, value in session_cookies.items()
+                    )
+                    # 合并现有 Cookie 或添加新 Cookie
+                    if 'Cookie' in request_headers:
+                        request_headers['Cookie'] = f"{request_headers['Cookie']}; {cookie_header}"
+                    else:
+                        request_headers['Cookie'] = cookie_header
+                    self.logger.debug(
+                        f"V5 会话持久化: 添加 {len(session_cookies)} 个 Cookie 到请求"
+                    )
 
             try:
                 # 发送请求
                 async with session.request(
                     method,
                     target_url,
-                    headers=headers,
+                    headers=request_headers,
                     data=body,
                     allow_redirects=False,
                     ssl=False
@@ -969,6 +979,35 @@ class ProxyServer:
 
                     response_headers['Via'] = 'SilkRoad-Next/2.0'
                     response_headers.pop('Transfer-Encoding', None)
+                    
+                    # V5: 保存响应中的 Cookie 到会话持久化管理器
+                    if session_id and 'Set-Cookie' in response_headers:
+                        try:
+                            # 解析 Set-Cookie 头
+                            set_cookie_header = response_headers.get('Set-Cookie', '')
+                            if set_cookie_header:
+                                # 简单解析 Cookie（实际应用中可能需要更复杂的解析）
+                                cookies = {}
+                                for cookie_str in set_cookie_header.split(','):
+                                    if '=' in cookie_str:
+                                        cookie_parts = cookie_str.strip().split(';')[0]
+                                        if '=' in cookie_parts:
+                                            name, value = cookie_parts.split('=', 1)
+                                            cookies[name.strip()] = {
+                                                'value': value.strip(),
+                                                'domain': host
+                                            }
+                                
+                                if cookies:
+                                    # 保存到会话持久化管理器
+                                    session_data = self.connection_pool.session_manager.load_session(session_id) or {}
+                                    session_data.setdefault('cookies', {}).update(cookies)
+                                    self.connection_pool.session_manager.save_session(session_id, session_data)
+                                    self.logger.debug(
+                                        f"V5 会话持久化: 保存 {len(cookies)} 个 Cookie 到会话 {session_id}"
+                                    )
+                        except Exception as e:
+                            self.logger.warning(f"保存会话 Cookie 失败: {e}")
                     response_headers.pop('Content-Security-Policy', None)
                     response_headers.pop('Content-Security-Policy-Report-Only', None)
 
@@ -1643,6 +1682,8 @@ class ProxyServer:
             response += f"Content-Type: {mime_type}\r\n"
             response += f"Content-Length: {len(content)}\r\n"
             response += "Connection: keep-alive\r\n"
+            response += "Cache-Control: public, max-age=3600\r\n"
+            response += "Accept-Ranges: bytes\r\n"
             response += "Via: SilkRoad-Next/1.0\r\n"
             response += "\r\n"
 
@@ -1656,6 +1697,32 @@ class ProxyServer:
 
         except Exception as e:
             self.logger.error(f"发送静态文件响应失败: {e}")
+            raise
+
+    async def _send_304_response(self, writer: asyncio.StreamWriter) -> None:
+        """
+        发送 304 Not Modified 响应
+
+        当文件未修改时，返回 304 状态码，客户端可以使用缓存。
+
+        Args:
+            writer: 流写入器
+        """
+        try:
+            # 构建 304 响应
+            response = "HTTP/1.1 304 Not Modified\r\n"
+            response += "Connection: keep-alive\r\n"
+            response += "Via: SilkRoad-Next/1.0\r\n"
+            response += "\r\n"
+
+            # 发送响应
+            writer.write(response.encode('utf-8'))
+            await writer.drain()
+
+            self.logger.debug("304 Not Modified 响应已发送")
+
+        except Exception as e:
+            self.logger.error(f"发送 304 响应失败: {e}")
             raise
 
     async def _send_error(self, writer: asyncio.StreamWriter,
@@ -1771,15 +1838,14 @@ class ProxyServer:
             },
             # V4 组件状态
             'v4_components': {
-                'websocket_handler': self.websocket_handler is not None,
-                'traffic_controller': self.traffic_controller is not None
+                'websocket_handler': self.websocket_handler is not None
             }
         }
 
         # 添加 V2 组件统计信息
         if self.connection_pool:
             try:
-                stats['connection_pool'] = self.connection_pool.get_stats()
+                stats['connection_pool'] = await self.connection_pool.get_stats()
             except Exception as e:
                 self.logger.warning(f"获取连接池统计信息失败: {e}")
 
@@ -1845,20 +1911,6 @@ class ProxyServer:
             except Exception as e:
                 self.logger.warning(f"获取 WebSocket 统计信息失败: {e}")
 
-        if self.traffic_controller:
-            try:
-                stats['traffic_control'] = await self.traffic_controller.get_stats()
-            except Exception as e:
-                self.logger.warning(f"获取流量控制统计信息失败: {e}")
-
-        # 添加 V5 组件统计信息
-        stats['v5_components'] = {
-            'waf_passer': self.waf_passer is not None,
-            'waf_detector': self.waf_detector is not None,
-            'request_obfuscator': self.request_obfuscator is not None,
-            'waf_evasion_enabled': self.waf_passer.is_waf_evasion_enabled()
-        }
-
         return stats
 
     def reset_stream_stats(self) -> Dict[str, bool]:
@@ -1883,8 +1935,7 @@ class ProxyServer:
                     'media_streams': 0,
                     'sse_streams': 0,
                     'bytes_transferred': 0,
-                    'errors': 0,
-                    'waf_blocked': 0
+                    'errors': 0
                 }
                 results['stream'] = True
                 self.logger.info("StreamHandler 统计信息已重置")
@@ -1992,333 +2043,3 @@ class ProxyServer:
             self.logger.error(f"获取流量整形状态失败: {e}")
             
         return status
-
-    def _is_waf_blocked(
-        self,
-        response_headers: Dict[str, str],
-        response_body: str,
-        status_code: int,
-        threshold: float = 0.5
-    ) -> bool:
-        """
-        检测响应是否被 WAF 拦截（V5 功能）
-
-        使用 WAF 检测引擎判断响应是否被 WAF 拦截。
-
-        Args:
-            response_headers: 响应头字典
-            response_body: 响应体内容
-            status_code: HTTP 状态码
-            threshold: 置信度阈值，默认 0.5
-
-        Returns:
-            如果检测到 WAF 拦截则返回 True，否则返回 False
-        """
-        if not self.waf_passer.is_waf_evasion_enabled():
-            return False
-
-        return self.waf_detector.is_blocked_response(
-            response_headers,
-            response_body,
-            status_code,
-            threshold
-        )
-
-    async def _handle_waf_block(
-        self,
-        writer: asyncio.StreamWriter,
-        method: str,
-        target_url: str,
-        original_headers: Dict[str, str],
-        body: Optional[bytes],
-        blocked_response_headers: Dict[str, str],
-        blocked_response_body: str,
-        blocked_status_code: int
-    ) -> None:
-        """
-        处理 WAF 拦截（V5 功能）
-
-        当检测到 WAF 拦截时，尝试使用不同的绕过策略重新发送请求。
-
-        Args:
-            writer: 流写入器
-            method: HTTP 方法
-            target_url: 目标 URL
-            original_headers: 原始请求头
-            body: 请求体
-            blocked_response_headers: 被拦截响应的响应头
-            blocked_response_body: 被拦截响应的响应体
-            blocked_status_code: 被拦截响应的状态码
-        """
-        # 获取检测结果
-        detection_result = self.waf_detector.detect_waf(
-            blocked_response_headers,
-            blocked_response_body,
-            blocked_status_code
-        )
-
-        self.logger.warning(
-            f"WAF 拦截检测 | 类型: {detection_result.waf_type.value} | "
-            f"置信度: {detection_result.confidence:.2f} | "
-            f"URL: {target_url}"
-        )
-
-        # 获取按优先级排序的绕过策略
-        evasion_strategies = self.waf_passer.get_strategies_sorted_by_priority()
-
-        # 尝试每种绕过策略
-        for strategy in evasion_strategies:
-            try:
-                self.logger.info(f"尝试绕过策略: {strategy.name} | URL: {target_url}")
-
-                # 应用绕过策略
-                modified_headers = self._apply_evasion_strategy(
-                    original_headers.copy(),
-                    target_url,
-                    strategy,
-                    detection_result.waf_type
-                )
-
-                # 添加策略指定的延迟
-                if strategy.request_delay > 0:
-                    await asyncio.sleep(strategy.request_delay)
-
-                # 重新发送请求
-                retry_response = await self._send_request_with_retry(
-                    method,
-                    target_url,
-                    modified_headers,
-                    body,
-                    max_retries=strategy.retry_count
-                )
-
-                if retry_response is None:
-                    continue
-
-                # 检查是否仍然被拦截
-                retry_headers = dict(retry_response.headers)
-                retry_body = await retry_response.text()
-                retry_status = retry_response.status
-
-                if not self._is_waf_blocked(retry_headers, retry_body, retry_status):
-                    self.logger.info(
-                        f"绕过策略成功: {strategy.name} | URL: {target_url}"
-                    )
-                    # 发送成功响应
-                    await self._send_response(writer, retry_response, target_url)
-                    return
-
-            except Exception as e:
-                self.logger.error(f"绕过策略 {strategy.name} 执行失败: {e}")
-                continue
-
-        # 所有策略都失败，返回错误页面
-        self.logger.error(f"所有绕过策略都失败 | URL: {target_url}")
-        await self._send_waf_blocked_error(
-            writer,
-            detection_result,
-            target_url
-        )
-
-    def _apply_evasion_strategy(
-        self,
-        headers: Dict[str, str],
-        target_url: str,
-        strategy: 'EvasionStrategy',
-        waf_type: 'WAFType'
-    ) -> Dict[str, str]:
-        """
-        应用绕过策略到请求头
-
-        Args:
-            headers: 原始请求头
-            target_url: 目标 URL
-            strategy: 绕过策略
-            waf_type: WAF 类型
-
-        Returns:
-            修改后的请求头
-        """
-        # 根据策略类型应用不同的修改
-        if strategy.name == "user_agent_rotation":
-            # User-Agent 轮换
-            headers['User-Agent'] = self.ua_handler.get_random_ua()
-
-        elif strategy.name == "header_obfuscation":
-            # 请求头混淆
-            headers = self.request_obfuscator.obfuscate_headers(
-                headers,
-                target_url,
-                waf_type
-            )
-
-        elif strategy.name == "referer_spoofing":
-            # Referer 伪造
-            parsed = urlsplit(target_url)
-            import random
-            paths = ["/", "/index.html", "/search", "/home"]
-            headers['Referer'] = f"{parsed.scheme}://{parsed.netloc}{random.choice(paths)}"
-
-        elif strategy.name == "cookie_handling":
-            # Cookie 处理 - 保持现有 Cookie
-            pass
-
-        elif strategy.name == "request_pacing":
-            # 请求速率控制 - 延迟已在调用方处理
-            pass
-
-        # 合并策略所需的请求头
-        headers.update(strategy.required_headers)
-
-        return headers
-
-    async def _send_request_with_retry(
-        self,
-        method: str,
-        target_url: str,
-        headers: Dict[str, str],
-        body: Optional[bytes],
-        max_retries: int = 3
-    ):
-        """
-        发送请求并支持重试
-
-        Args:
-            method: HTTP 方法
-            target_url: 目标 URL
-            headers: 请求头
-            body: 请求体
-            max_retries: 最大重试次数
-
-        Returns:
-            响应对象，如果所有重试都失败则返回 None
-        """
-        assert self.session is not None
-
-        for attempt in range(max_retries):
-            try:
-                async with self.session.request(
-                    method,
-                    target_url,
-                    headers=headers,
-                    data=body,
-                    allow_redirects=False,
-                    ssl=False
-                ) as response:
-                    return response
-
-            except asyncio.TimeoutError:
-                self.logger.warning(f"请求超时 (尝试 {attempt + 1}/{max_retries}): {target_url}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1.0)
-                    continue
-
-            except aiohttp.ClientError as e:
-                self.logger.error(f"请求错误 (尝试 {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1.0)
-                    continue
-
-            except Exception as e:
-                self.logger.error(f"未知错误 (尝试 {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1.0)
-                    continue
-
-        return None
-
-    async def _send_waf_blocked_error(
-        self,
-        writer: asyncio.StreamWriter,
-        detection_result: 'WAFDetectionResult',
-        target_url: str
-    ) -> None:
-        """
-        发送 WAF 拦截错误页面
-
-        Args:
-            writer: 流写入器
-            detection_result: WAF 检测结果
-            target_url: 目标 URL
-        """
-        try:
-            # 构建错误页面
-            error_html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>WAF Blocked</title>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            text-align: center;
-            padding: 50px;
-            background-color: #f5f5f5;
-        }}
-        .error-container {{
-            background: white;
-            padding: 40px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            max-width: 600px;
-            margin: 0 auto;
-        }}
-        h1 {{
-            color: #e74c3c;
-            margin-bottom: 20px;
-        }}
-        p {{
-            color: #666;
-            margin-bottom: 15px;
-        }}
-        .details {{
-            background: #f9f9f9;
-            padding: 15px;
-            border-radius: 5px;
-            text-align: left;
-            font-size: 12px;
-            margin-top: 20px;
-        }}
-        .powered-by {{
-            color: #999;
-            font-size: 12px;
-            margin-top: 30px;
-        }}
-    </style>
-</head>
-<body>
-    <div class="error-container">
-        <h1>WAF Blocked</h1>
-        <p>The request was blocked by a Web Application Firewall.</p>
-        <p>All evasion strategies have been exhausted.</p>
-        <div class="details">
-            <strong>WAF Type:</strong> {detection_result.waf_type.value}<br>
-            <strong>Confidence:</strong> {detection_result.confidence:.2f}<br>
-            <strong>Detection Methods:</strong> {', '.join(detection_result.detection_methods)}<br>
-            <strong>Target URL:</strong> {target_url}
-        </div>
-        <div class="powered-by">
-            Powered by SilkRoad-Next/5.0 (WAF Evasion)
-        </div>
-    </div>
-</body>
-</html>"""
-
-            # 编码
-            content = error_html.encode('utf-8')
-
-            # 构建响应
-            response = "HTTP/1.1 403 Forbidden\r\n"
-            response += "Content-Type: text/html; charset=utf-8\r\n"
-            response += f"Content-Length: {len(content)}\r\n"
-            response += "Connection: close\r\n"
-            response += "Via: SilkRoad-Next/5.0\r\n"
-            response += "\r\n"
-
-            # 发送响应
-            writer.write(response.encode('utf-8'))
-            writer.write(content)
-            await writer.drain()
-
-        except Exception as e:
-            self.logger.error(f"发送 WAF 拦截错误页面失败: {e}")

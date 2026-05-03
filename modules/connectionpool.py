@@ -21,8 +21,6 @@ from datetime import datetime
 import time
 from loguru import logger as loguru_logger
 
-from modules.wafpasser import SessionPersistenceManager
-
 if TYPE_CHECKING:
     from modules.logging import Logger
 
@@ -91,12 +89,6 @@ class ConnectionPool:
         
         # 日志记录器
         self._logger = logger or loguru_logger
-        
-        # 会话持久化管理器（V5 集成）
-        self.session_manager = SessionPersistenceManager()
-        
-        # 当前会话的 Cookie 缓存（用于会话持久化）
-        self._session_cookies: Dict[str, str] = {}
         
         # 统计信息
         self.stats = {

@@ -224,8 +224,61 @@ class Logger:
         
         确保所有日志都已写入文件，然后移除所有处理器
         """
-        # 等待所有异步日志写入完成
         await logger.complete()
-        
-        # 移除所有处理器
         logger.remove()
+    
+    def set_level(self, level: str):
+        """
+        动态设置日志级别
+        
+        重新配置日志系统以使用新的日志级别。
+        这会移除现有的处理器并添加新的处理器。
+        
+        Args:
+            level: 日志级别（DEBUG、INFO、WARNING、ERROR）
+        """
+        level = level.upper()
+        valid_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
+        if level not in valid_levels:
+            raise ValueError(f"无效的日志级别: {level}，有效值为: {valid_levels}")
+        
+        retention = self._parse_retention(
+            self.config.get('logging.retention', '30 days')
+        )
+        
+        logger.remove()
+        
+        logger.add(
+            sys.stdout,
+            level=level,
+            format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+                   "<level>{level: <8}</level> | "
+                   "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+                   "<level>{message}</level>",
+            colorize=True,
+            enqueue=True
+        )
+        
+        logger.add(
+            self.log_dir / "{time:YYYY-MM-DD}.log",
+            level=level,
+            rotation="00:00",
+            retention=retention,
+            encoding='utf-8',
+            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+            enqueue=True,
+            serialize=False
+        )
+        
+        logger.add(
+            self.log_dir / "error_{time:YYYY-MM-DD}.log",
+            level="ERROR",
+            rotation="00:00",
+            retention=retention,
+            encoding='utf-8',
+            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}\n{exception}",
+            enqueue=True,
+            serialize=False,
+            backtrace=True,
+            diagnose=True
+        )

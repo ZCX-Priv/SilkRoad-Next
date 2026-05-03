@@ -25,6 +25,8 @@ import time
 from loguru import logger as loguru_logger
 import uuid
 
+from modules.exit import GracefulExit
+
 if TYPE_CHECKING:
     from modules.logging import Logger
 
@@ -123,9 +125,10 @@ class WebSocketHandler:
         self.logger.info("WebSocketHandler 初始化完成")
     
     async def handle_upgrade(self,
-                            client_writer: asyncio.StreamWriter,
-                            headers: Dict[str, str],
-                            target_url: str) -> None:
+                             client_reader: asyncio.StreamReader,
+                             client_writer: asyncio.StreamWriter,
+                             headers: Dict[str, str],
+                             target_url: str) -> None:
         """
         处理 WebSocket 升级请求
         
@@ -160,19 +163,19 @@ class WebSocketHandler:
                 client_writer=client_writer,
                 target_ws=target_ws
             )
-            
+
             await self._send_handshake_response(client_writer, headers)
-            
+
             context.state = ConnectionState.OPEN
-            
+
             async with self._lock:
                 self._connections[connection_id] = context
                 self.stats['total_connections'] += 1
                 self.stats['active_connections'] += 1
-            
+
             self.logger.info(f"WebSocket 连接建立: {connection_id} -> {target_url}")
-            
-            await self._start_message_forwarding(context)
+
+            await self._start_message_forwarding(context, client_reader)
             
         except Exception as e:
             self.logger.error(f"WebSocket 升级失败: {e}")
@@ -329,7 +332,7 @@ class WebSocketHandler:
         
         return accept
     
-    async def _start_message_forwarding(self, context: WebSocketContext) -> None:
+    async def _start_message_forwarding(self, context: WebSocketContext, client_reader: asyncio.StreamReader) -> None:
         """
         启动双向消息转发
         
@@ -338,11 +341,15 @@ class WebSocketHandler:
         """
         try:
             client_to_target = asyncio.create_task(
-                self._forward_client_messages(context)
+                self._forward_client_messages(context, client_reader)
             )
             target_to_client = asyncio.create_task(
                 self._forward_target_messages(context)
             )
+            
+            if GracefulExit.is_initialized():
+                GracefulExit.register_task(client_to_target)
+                GracefulExit.register_task(target_to_client)
             
             done, pending = await asyncio.wait(
                 [client_to_target, target_to_client],
@@ -363,15 +370,15 @@ class WebSocketHandler:
         finally:
             await self._close_connection(context)
     
-    async def _forward_client_messages(self, context: WebSocketContext) -> None:
+    async def _forward_client_messages(self, context: WebSocketContext, reader: asyncio.StreamReader) -> None:
         """
         转发客户端消息到目标服务器
         
         Args:
             context: WebSocket 连接上下文
+            reader: 客户端读取器
         """
         try:
-            reader = context.client_writer._transport.get_extra_info('reader')
             
             while context.state == ConnectionState.OPEN:
                 frame = await self._read_frame(reader)
