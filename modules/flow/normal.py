@@ -1,8 +1,7 @@
 import asyncio
 import gzip
-import json
 import zlib
-from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING
+from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING, Union
 from urllib.parse import urlsplit, urljoin
 
 import aiohttp
@@ -215,7 +214,7 @@ class NormalHandler:
                         )
 
                     content_type = response.headers.get('Content-Type', '')
-                    if self._should_rewrite(content_type):
+                    if self._should_rewrite(content_type) and self.url_handler:
                         try:
                             content = await self.url_handler.rewrite(
                                 content, content_type, target_url
@@ -251,6 +250,8 @@ class NormalHandler:
                             import traceback
                             self.logger.error(f"脚本注入失败: {e}\n{traceback.format_exc()}")
 
+                    if isinstance(content, str):
+                        content = content.encode('utf-8', errors='ignore')
                     content, encoding = await self._compress_content(content)
 
                     response_headers = dict(response.headers)
@@ -278,10 +279,12 @@ class NormalHandler:
                                                 'domain': host
                                             }
 
-                                if cookies:
-                                    session_data = self.connection_pool.session_manager.load_session(session_id) or {}
-                                    session_data.setdefault('cookies', {}).update(cookies)
-                                    self.connection_pool.session_manager.save_session(session_id, session_data)
+                                if cookies and self.connection_pool:
+                                    _sm = getattr(self.connection_pool, 'session_manager', None)  # type: ignore[attr-defined]
+                                    if _sm:
+                                        session_data = _sm.load_session(session_id) or {}
+                                        session_data.setdefault('cookies', {}).update(cookies)
+                                        _sm.save_session(session_id, session_data)
                                     self.logger.debug(
                                         f"V5 会话持久化: 保存 {len(cookies)} 个 Cookie 到会话 {session_id}"
                                     )
@@ -290,23 +293,23 @@ class NormalHandler:
                     response_headers.pop('Content-Security-Policy', None)
                     response_headers.pop('Content-Security-Policy-Report-Only', None)
 
-                    if 'Location' in response_headers:
+                    if 'Location' in response_headers and self.url_handler:
                         response_headers['Location'] = self.url_handler.rewrite_location_header(
                             response_headers['Location'], target_url
                         )
                         self.logger.debug(f"Location 头重写（连接池）: {response_headers['Location']}")
 
-                    if 'Content-Location' in response_headers:
+                    if 'Content-Location' in response_headers and self.url_handler:
                         response_headers['Content-Location'] = self.url_handler.rewrite_content_location_header(
                             response_headers['Content-Location'], target_url
                         )
 
-                    if 'Refresh' in response_headers:
+                    if 'Refresh' in response_headers and self.url_handler and hasattr(self.url_handler, 'location_handler') and self.url_handler.location_handler:
                         response_headers['Refresh'] = self.url_handler.location_handler.rewrite_refresh_header(
                             response_headers['Refresh'], target_url
                         )
 
-                    target_domain = self.cookie_handler.extract_domain_from_url(target_url)
+                    target_domain = self.cookie_handler.extract_domain_from_url(target_url) if self.cookie_handler else None
                     set_cookie_values = None
                     if 'Set-Cookie' in response_headers:
                         set_cookie_values = response_headers.pop('Set-Cookie')
@@ -328,7 +331,7 @@ class NormalHandler:
                         for cookie_value in set_cookie_values:
                             rewritten_cookie = self.cookie_handler.rewrite_set_cookie(
                                 cookie_value, target_domain
-                            )
+                            ) if self.cookie_handler else cookie_value
                             writer.write(f"Set-Cookie: {rewritten_cookie}\r\n".encode('utf-8'))
 
                     writer.write(b"\r\n")
@@ -344,9 +347,10 @@ class NormalHandler:
                         )
 
             finally:
-                await self.connection_pool.return_connection(
-                    host, port, session.connector
-                )
+                if self.connection_pool and session.connector:
+                    await self.connection_pool.return_connection(
+                        host, port, session.connector  # type: ignore[arg-type]
+                    )
                 await session.close()
 
         except ConnectionError as e:
@@ -383,7 +387,7 @@ class NormalHandler:
             )
 
             content_type = response.headers.get('Content-Type', '')
-            if self._should_rewrite(content_type):
+            if self._should_rewrite(content_type) and self.url_handler:
                 try:
                     content = await self.url_handler.rewrite(
                         content,
@@ -393,6 +397,8 @@ class NormalHandler:
                 except Exception as e:
                     self.logger.error(f"URL 修正失败: {e}")
 
+            if isinstance(content, str):
+                content = content.encode('utf-8', errors='ignore')
             content, encoding = await self._compress_content(content)
 
             headers = dict(response.headers)
@@ -409,23 +415,23 @@ class NormalHandler:
             headers.pop('Content-Security-Policy', None)
             headers.pop('Content-Security-Policy-Report-Only', None)
 
-            if 'Location' in headers:
+            if 'Location' in headers and self.url_handler:
                 headers['Location'] = self.url_handler.rewrite_location_header(
                     headers['Location'], target_url
                 )
                 self.logger.debug(f"Location 头重写: {headers['Location']}")
 
-            if 'Content-Location' in headers:
+            if 'Content-Location' in headers and self.url_handler:
                 headers['Content-Location'] = self.url_handler.rewrite_content_location_header(
                     headers['Content-Location'], target_url
                 )
 
-            if 'Refresh' in headers:
+            if 'Refresh' in headers and self.url_handler and hasattr(self.url_handler, 'location_handler') and self.url_handler.location_handler:
                 headers['Refresh'] = self.url_handler.location_handler.rewrite_refresh_header(
                     headers['Refresh'], target_url
                 )
 
-            target_domain = self.cookie_handler.extract_domain_from_url(target_url)
+            target_domain = self.cookie_handler.extract_domain_from_url(target_url) if self.cookie_handler else None
 
             set_cookie_values = None
             if 'Set-Cookie' in headers:
@@ -448,7 +454,7 @@ class NormalHandler:
                 for cookie_value in set_cookie_values:
                     rewritten_cookie = self.cookie_handler.rewrite_set_cookie(
                         cookie_value, target_domain
-                    )
+                    ) if self.cookie_handler else cookie_value
                     writer.write(f"Set-Cookie: {rewritten_cookie}\r\n".encode('utf-8'))
 
             writer.write(b"\r\n")
@@ -473,11 +479,11 @@ class NormalHandler:
                 if key_lower in ['transfer-encoding', 'content-security-policy', 'content-security-policy-report-only', 'set-cookie']:
                     continue
 
-                if key_lower == 'location':
+                if key_lower == 'location' and self.url_handler:
                     value = self.url_handler.rewrite_location_header(value, '')
-                elif key_lower == 'content-location':
+                elif key_lower == 'content-location' and self.url_handler:
                     value = self.url_handler.rewrite_content_location_header(value, '')
-                elif key_lower == 'refresh':
+                elif key_lower == 'refresh' and self.url_handler and hasattr(self.url_handler, 'location_handler') and self.url_handler.location_handler:
                     value = self.url_handler.location_handler.rewrite_refresh_header(value, '')
 
                 writer.write(f"{key}: {value}\r\n".encode('utf-8'))
@@ -502,7 +508,7 @@ class NormalHandler:
 
     async def _send_cached_response(self, writer: asyncio.StreamWriter,
                                      cached_data: bytes,
-                                     target_url: str) -> None:
+                                     _target_url: str) -> None:
         try:
             content, encoding = await self._compress_content(cached_data)
 
@@ -556,8 +562,7 @@ class NormalHandler:
                 if len(content) < 2:
                     return content
                 return zlib.decompress(content)
-            else:
-                return content
+            return content
 
         except Exception as e:
             self.logger.debug(f"解压缩失败，使用原始内容: {e}")
@@ -583,8 +588,7 @@ class NormalHandler:
                 if len(content) < 2:
                     return content
                 return zlib.decompress(content)
-            else:
-                return content
+            return content
 
         except Exception as e:
             self.logger.debug(f"解压缩失败，使用原始内容: {e}")

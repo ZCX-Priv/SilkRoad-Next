@@ -83,6 +83,8 @@ class ConnectionPool:
         
         # 连接所属池映射：{connection_id: pool_key}
         self._connection_pool_map: Dict[int, str] = {}
+
+        self.session_manager: Any = None
         
         # 锁机制，确保线程安全
         self._lock = asyncio.Lock()

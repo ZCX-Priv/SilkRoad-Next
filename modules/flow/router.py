@@ -347,24 +347,27 @@ class FlowRouter:
             self.logger.error(f"重置 StreamHandler 统计信息失败: {e}")
 
         try:
-            if hasattr(self.stream_handler, 'media_handler') and self.stream_handler.media_handler:
-                self.stream_handler.media_handler.reset_stats()
+            _mh = getattr(self.stream_handler, 'media_handler', None) if self.stream_handler else None
+            if _mh:
+                _mh.reset_stats()
                 results['media'] = True
                 self.logger.info("MediaHandler 统计信息已重置")
         except Exception as e:
             self.logger.error(f"重置 MediaHandler 统计信息失败: {e}")
 
         try:
-            if hasattr(self.stream_handler, 'sse_handler') and self.stream_handler.sse_handler:
-                self.stream_handler.sse_handler.reset_stats()
+            _sh = getattr(self.stream_handler, 'sse_handler', None) if self.stream_handler else None
+            if _sh:
+                _sh.reset_stats()
                 results['sse'] = True
                 self.logger.info("SSEHandler 统计信息已重置")
         except Exception as e:
             self.logger.error(f"重置 SSEHandler 统计信息失败: {e}")
 
         try:
-            if hasattr(self.stream_handler, 'others_handler') and self.stream_handler.others_handler:
-                self.stream_handler.others_handler.reset_stats()
+            _oh = getattr(self.stream_handler, 'others_handler', None) if self.stream_handler else None
+            if _oh:
+                _oh.reset_stats()
                 results['others'] = True
                 self.logger.info("OthersHandler 统计信息已重置")
         except Exception as e:
@@ -393,9 +396,7 @@ class FlowRouter:
         }
 
         try:
-            others_handler = None
-            if hasattr(self.stream_handler, 'others_handler'):
-                others_handler = self.stream_handler.others_handler
+            others_handler = getattr(self.stream_handler, 'others_handler', None) if self.stream_handler else None
 
             if others_handler:
                 result['previous_config'] = {
@@ -437,9 +438,7 @@ class FlowRouter:
         }
 
         try:
-            others_handler = None
-            if hasattr(self.stream_handler, 'others_handler'):
-                others_handler = self.stream_handler.others_handler
+            others_handler = getattr(self.stream_handler, 'others_handler', None) if self.stream_handler else None
 
             if others_handler:
                 status['enabled'] = others_handler.enable_rate_limit

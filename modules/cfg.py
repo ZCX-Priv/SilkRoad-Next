@@ -26,8 +26,8 @@ try:
     WATCHDOG_AVAILABLE = True
 except ImportError:
     WATCHDOG_AVAILABLE = False
-    Observer = None
-    FileSystemEventHandler = object
+    Observer = None  # type: ignore[assignment,misc]
+    FileSystemEventHandler = object  # type: ignore[assignment,misc]
     FileModifiedEvent = None
 
 
@@ -538,32 +538,32 @@ class ConfigManager:
         try:
             self._event_loop = asyncio.get_event_loop()
             
-            class ConfigFileHandler(FileSystemEventHandler if WATCHDOG_AVAILABLE else object):
-                def __init__(handler, config_manager: ConfigManager):
-                    handler.config_manager = config_manager
-                    handler._last_modified = 0
+            class ConfigFileHandler(FileSystemEventHandler):  # type: ignore[misc]
+                def __init__(self, config_manager: ConfigManager):
+                    self.config_manager = config_manager
+                    self._last_modified = 0
                 
-                def on_modified(handler, event):
+                def on_modified(self, event):
                     if event.src_path.endswith('config.json'):
                         import time
                         current_time = time.time()
                         
-                        if current_time - handler._last_modified < 1.0:
+                        if current_time - self._last_modified < 1.0:
                             return
                         
-                        handler._last_modified = current_time
+                        self._last_modified = current_time
                         
-                        if handler.config_manager._event_loop:
+                        if self.config_manager._event_loop:
                             def create_and_register_task():
-                                task = asyncio.create_task(handler.config_manager._on_file_changed())
+                                task = asyncio.create_task(self.config_manager._on_file_changed())
                                 if GracefulExit.is_initialized():
                                     GracefulExit.register_task(task)
                             
-                            handler.config_manager._event_loop.call_soon_threadsafe(
+                            self.config_manager._event_loop.call_soon_threadsafe(
                                 create_and_register_task
                             )
             
-            self._observer = Observer()
+            self._observer = Observer()  # type: ignore[misc]
             config_dir = os.path.dirname(self.config_path)
             if not config_dir:
                 config_dir = '.'

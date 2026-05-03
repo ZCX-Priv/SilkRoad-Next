@@ -100,7 +100,7 @@ class MediaHandler:
         }
 
         # 流式缓存（简单的内存缓存）
-        self._cache: Dict[str, bytes] = {}
+        self._cache: Dict[str, dict] = {}
         self._cache_lock = asyncio.Lock()
 
         # 缓存配置
@@ -671,7 +671,7 @@ class MediaHandler:
                 is_valid=False
             )
 
-    async def cache_content(self, cache_key: str, content: bytes) -> bool:
+    async def cache_content(self, cache_key: str, content: dict) -> bool:
         """
         缓存媒体内容
 
@@ -686,7 +686,7 @@ class MediaHandler:
         """
         async with self._cache_lock:
             # 检查缓存大小限制
-            content_size = len(content)
+            content_size = len(content.get('content', b''))
             if self._current_cache_size + content_size > self._max_cache_size:
                 self.logger.warning(
                     f"缓存大小超限，无法缓存: {cache_key} | "
@@ -706,7 +706,7 @@ class MediaHandler:
             )
             return True
 
-    async def get_cached_content(self, cache_key: str) -> Optional[bytes]:
+    async def get_cached_content(self, cache_key: str) -> Optional[dict]:
         """
         获取缓存的媒体内容
 
@@ -739,7 +739,8 @@ class MediaHandler:
             if cache_key is not None:
                 # 清除指定缓存
                 if cache_key in self._cache:
-                    size = len(self._cache[cache_key])
+                    cached = self._cache[cache_key]
+                    size = len(cached.get('content', b'')) if isinstance(cached, dict) else len(cached)
                     del self._cache[cache_key]
                     self._current_cache_size -= size
                     self.logger.debug(f"已清除缓存: {cache_key} | 大小={size}")
@@ -806,7 +807,7 @@ class MediaHandler:
         """
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type, exc_val, exc_tb):  # type: ignore[arg-type]
         """
         异步上下文管理器出口
 
@@ -835,7 +836,7 @@ class MediaHandler:
         import hashlib
         return hashlib.md5(url.encode('utf-8')).hexdigest()
 
-    def _should_cache(self, response: aiohttp.ClientResponse, context: StreamContext) -> bool:
+    def _should_cache(self, response: aiohttp.ClientResponse, _context: StreamContext) -> bool:
         """
         判断是否应该缓存响应
 
