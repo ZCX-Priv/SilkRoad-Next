@@ -600,7 +600,7 @@ class ProxyServer:
             parts = referer_path.split('/', 1)
             first_segment = parts[0]
 
-            if '.' in first_segment or first_segment.startswith('['):
+            if self._is_valid_host(first_segment):
                 return first_segment
 
             return None

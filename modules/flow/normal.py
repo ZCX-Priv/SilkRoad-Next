@@ -1,6 +1,4 @@
 import asyncio
-import gzip
-import zlib
 from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING, Union
 from urllib.parse import urlsplit, urljoin
 
@@ -200,19 +198,6 @@ class NormalHandler:
                 ) as response:
                     content = await response.read()
 
-                    if self.thread_pool:
-                        content = await self.thread_pool.run_in_thread(
-                            self._decompress_content_sync,
-                            content,
-                            response.headers.get('Content-Encoding'),
-                            timeout=10.0
-                        )
-                    else:
-                        content = await self._decompress_content(
-                            content,
-                            response.headers.get('Content-Encoding')
-                        )
-
                     content_type = response.headers.get('Content-Type', '')
                     if self._should_rewrite(content_type) and self.url_handler:
                         try:
@@ -252,15 +237,10 @@ class NormalHandler:
 
                     if isinstance(content, str):
                         content = content.encode('utf-8', errors='ignore')
-                    content, encoding = await self._compress_content(content)
 
                     response_headers = dict(response.headers)
                     response_headers['Content-Length'] = str(len(content))
-                    if encoding and encoding != 'identity':
-                        response_headers['Content-Encoding'] = encoding
-                    else:
-                        response_headers.pop('Content-Encoding', None)
-
+                    response_headers.pop('Content-Encoding', None)
                     response_headers['Via'] = 'SilkRoad-Next/2.0'
                     response_headers.pop('Transfer-Encoding', None)
 
@@ -382,11 +362,6 @@ class NormalHandler:
 
             content = await response.read()
 
-            content = await self._decompress_content(
-                content,
-                response.headers.get('Content-Encoding')
-            )
-
             content_type = response.headers.get('Content-Type', '')
             if self._should_rewrite(content_type) and self.url_handler:
                 try:
@@ -400,15 +375,11 @@ class NormalHandler:
 
             if isinstance(content, str):
                 content = content.encode('utf-8', errors='ignore')
-            content, encoding = await self._compress_content(content)
 
             headers = dict(response.headers)
 
             headers['Content-Length'] = str(len(content))
-            if encoding and encoding != 'identity':
-                headers['Content-Encoding'] = encoding
-            else:
-                headers.pop('Content-Encoding', None)
+            headers.pop('Content-Encoding', None)
 
             headers['Via'] = 'SilkRoad-Next/1.0'
 
@@ -511,18 +482,13 @@ class NormalHandler:
                                      cached_data: bytes,
                                      _target_url: str) -> None:
         try:
-            content, encoding = await self._compress_content(cached_data)
-
             headers = {
                 'Content-Type': 'text/html; charset=utf-8',
-                'Content-Length': str(len(content)),
+                'Content-Length': str(len(cached_data)),
                 'Connection': 'keep-alive',
                 'Via': 'SilkRoad-Next/2.0 (cached)',
                 'X-Cache': 'HIT'
             }
-
-            if encoding and encoding != 'identity':
-                headers['Content-Encoding'] = encoding
 
             status_line = "HTTP/1.1 200 OK\r\n"
             writer.write(status_line.encode('utf-8'))
@@ -531,89 +497,14 @@ class NormalHandler:
                 writer.write(f"{key}: {value}\r\n".encode('utf-8'))
 
             writer.write(b"\r\n")
-            writer.write(content)
+            writer.write(cached_data)
             await writer.drain()
 
-            self.logger.debug(f"缓存响应已发送: {len(content)} bytes")
+            self.logger.debug(f"缓存响应已发送: {len(cached_data)} bytes")
 
         except Exception as e:
             self.logger.error(f"发送缓存响应失败: {e}")
             raise
-
-    async def _decompress_content(self, content: bytes,
-                                   encoding: Optional[str]) -> bytes:
-        if not encoding:
-            return content
-
-        encoding = encoding.lower()
-
-        if encoding not in ('gzip', 'deflate', 'x-gzip'):
-            self.logger.debug(f"不支持的压缩格式: {encoding}")
-            return content
-
-        try:
-            if encoding in ('gzip', 'x-gzip'):
-                if len(content) < 2:
-                    return content
-                if content[:2] != b'\x1f\x8b':
-                    self.logger.debug(f"内容非gzip格式，跳过解压")
-                    return content
-                return gzip.decompress(content)
-            elif encoding == 'deflate':
-                if len(content) < 2:
-                    return content
-                return zlib.decompress(content)
-            return content
-
-        except Exception as e:
-            self.logger.debug(f"解压缩失败，使用原始内容: {e}")
-            return content
-
-    def _decompress_content_sync(self, content: bytes, encoding: Optional[str]) -> bytes:
-        if not encoding:
-            return content
-
-        encoding = encoding.lower()
-
-        if encoding not in ('gzip', 'deflate', 'x-gzip'):
-            return content
-
-        try:
-            if encoding in ('gzip', 'x-gzip'):
-                if len(content) < 2:
-                    return content
-                if content[:2] != b'\x1f\x8b':
-                    return content
-                return gzip.decompress(content)
-            elif encoding == 'deflate':
-                if len(content) < 2:
-                    return content
-                return zlib.decompress(content)
-            return content
-
-        except Exception as e:
-            self.logger.debug(f"解压缩失败，使用原始内容: {e}")
-            return content
-
-    async def _compress_content(self, content: bytes) -> Tuple[bytes, str]:
-        if not self.config.get('proxy.enableCompression', True):
-            return content, 'identity'
-
-        if len(content) < 1024:
-            return content, 'identity'
-
-        try:
-            compression_level = self.config.get('proxy.compressionLevel', 6)
-            compressed = gzip.compress(content, compresslevel=compression_level)
-
-            if len(compressed) < len(content):
-                return compressed, 'gzip'
-            else:
-                return content, 'identity'
-
-        except Exception as e:
-            self.logger.error(f"压缩失败: {e}")
-            return content, 'identity'
 
     def _should_rewrite(self, content_type: str) -> bool:
         if not content_type:

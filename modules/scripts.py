@@ -20,6 +20,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from modules.logging import Logger
@@ -78,8 +79,18 @@ class ScriptInjector:
         stats = injector.get_stats()
     """
     
-    # 支持的注入位置
-    VALID_POSITIONS = {'head_start', 'head_end', 'body_start', 'body_end'}
+    VALID_POSITIONS = {
+        'after_head_start', 'before_head_end', 
+        'after_body_start', 'before_body_end',
+        'head_start', 'head_end', 'body_start', 'body_end'
+    }
+    
+    POSITION_ALIASES = {
+        'head_start': 'after_head_start',
+        'head_end': 'before_head_end',
+        'body_start': 'after_body_start',
+        'body_end': 'before_body_end'
+    }
     
     def __init__(
         self,
@@ -98,25 +109,25 @@ class ScriptInjector:
         self.config_file = config_file
         self.scripts_dir = Path(scripts_dir)
         
-        # 脚本配置：{script_name: config}
         self._scripts: Dict[str, dict] = {}
         
-        # 脚本内容缓存：{script_name: content}
         self._script_cache: Dict[str, str] = {}
         
-        # 编译后的 URL 模式缓存：{script_name: [compiled_patterns]}
         self._pattern_cache: Dict[str, List[re.Pattern]] = {}
         
-        # 锁机制，确保线程安全
         self._lock = asyncio.Lock()
         
-        # 日志记录器
         self._logger = logger or loguru_logger
         
-        # 配置加载状态
         self._config_loaded = False
         
-        # 统计信息
+        self.positions = {
+            "after_head_start": "<head>",
+            "before_head_end": "</head>",
+            "after_body_start": "<body>",
+            "before_body_end": "</body>"
+        }
+        
         self._stats = {
             'total_injections': 0,
             'scripts_loaded': 0,
@@ -356,7 +367,8 @@ class ScriptInjector:
     async def get_scripts_for_url(
         self,
         url: str,
-        content_type: str = 'text/html'
+        content_type: str = 'text/html',
+        domain: Optional[str] = None
     ) -> List[dict]:
         """
         获取适用于指定 URL 的脚本列表
@@ -364,6 +376,7 @@ class ScriptInjector:
         Args:
             url: 请求 URL
             content_type: 内容类型
+            domain: 请求域名（用于域名排除）
             
         Returns:
             脚本配置列表，按优先级排序（高优先级在前）
@@ -372,11 +385,14 @@ class ScriptInjector:
             applicable_scripts = []
             
             for script_name, script_config in self._scripts.items():
-                # 检查是否启用
                 if not script_config.get('enabled', False):
                     continue
                 
-                # 检查条件
+                exclude_domains = script_config.get('exclude_domains', [])
+                if domain and exclude_domains:
+                    if any(domain.endswith(excluded) or domain == excluded for excluded in exclude_domains):
+                        continue
+                
                 conditions = script_config.get('conditions', {})
                 
                 # 检查 URL 模式
@@ -392,19 +408,20 @@ class ScriptInjector:
                     if not url_match:
                         continue
                 
-                # 检查内容类型
                 content_types = conditions.get('content_types', [])
                 if content_types:
-                    # 支持通配符匹配，如 text/*
                     content_match = False
+                    content_lower = content_type.lower()
+                    
                     for allowed_type in content_types:
-                        if allowed_type.endswith('*'):
-                            # 通配符匹配
-                            prefix = allowed_type[:-1]
-                            if content_type.startswith(prefix):
+                        allowed_lower = allowed_type.lower()
+                        
+                        if allowed_lower.endswith('*'):
+                            prefix = allowed_lower[:-1]
+                            if content_lower.startswith(prefix):
                                 content_match = True
                                 break
-                        elif content_type == allowed_type:
+                        elif allowed_lower in content_lower:
                             content_match = True
                             break
                     
@@ -446,57 +463,72 @@ class ScriptInjector:
         Returns:
             注入脚本后的 HTML
         """
-        # 获取适用的脚本
-        scripts = await self.get_scripts_for_url(url, content_type)
+        if not content_type or 'text/html' not in content_type.lower():
+            self._logger.debug(f"内容类型不是 HTML，跳过注入: {content_type}")
+            return html
+        
+        html_check = html.lower().strip()[:2000]
+        is_valid_html = (
+            html_check.startswith('<!doctype') or
+            html_check.startswith('<html') or
+            '<html' in html_check or
+            ('<head' in html_check and '<body' in html_check)
+        )
+        
+        if not is_valid_html:
+            self._logger.debug(f"内容不是有效 HTML 结构，跳过注入: {url[:100]}")
+            return html
+        
+        try:
+            parsed_url = urlparse(url)
+            domain = parsed_url.netloc
+        except Exception:
+            domain = None
+        
+        scripts = await self.get_scripts_for_url(url, content_type, domain)
         
         if not scripts:
             return html
         
-        # 分类脚本（按位置）
-        head_start_scripts = []
-        head_end_scripts = []
-        body_start_scripts = []
-        body_end_scripts = []
+        after_head_start_scripts = []
+        before_head_end_scripts = []
+        after_body_start_scripts = []
+        before_body_end_scripts = []
         
         for script in scripts:
-            position = script['config'].get('position', 'body_end')
+            position = script['config'].get('position', 'before_body_end')
             
-            if position == 'head_start':
-                head_start_scripts.append(script)
-            elif position == 'head_end':
-                head_end_scripts.append(script)
-            elif position == 'body_start':
-                body_start_scripts.append(script)
-            else:  # body_end
-                body_end_scripts.append(script)
+            if position in ('head_start', 'after_head_start'):
+                after_head_start_scripts.append(script)
+            elif position in ('head_end', 'before_head_end'):
+                before_head_end_scripts.append(script)
+            elif position in ('body_start', 'after_body_start'):
+                after_body_start_scripts.append(script)
+            else:
+                before_body_end_scripts.append(script)
         
         result_html = html
         
-        # 注入到 head_start
-        if head_start_scripts:
+        if after_head_start_scripts:
             result_html = await self._inject_to_head_start(
-                result_html, head_start_scripts
+                result_html, after_head_start_scripts
             )
         
-        # 注入到 head_end
-        if head_end_scripts:
+        if before_head_end_scripts:
             result_html = await self._inject_to_head_end(
-                result_html, head_end_scripts
+                result_html, before_head_end_scripts
             )
         
-        # 注入到 body_start
-        if body_start_scripts:
+        if after_body_start_scripts:
             result_html = await self._inject_to_body_start(
-                result_html, body_start_scripts
+                result_html, after_body_start_scripts
             )
         
-        # 注入到 body_end
-        if body_end_scripts:
+        if before_body_end_scripts:
             result_html = await self._inject_to_body_end(
-                result_html, body_end_scripts
+                result_html, before_body_end_scripts
             )
         
-        # 更新统计
         self._stats['total_injections'] += len(scripts)
         
         return result_html
@@ -516,23 +548,18 @@ class ScriptInjector:
         Returns:
             注入后的 HTML
         """
-        # 生成脚本标签
         script_tags = self._generate_script_tags(scripts)
         
         if not script_tags:
             return html
         
-        # 查找 <head> 标签
         pattern = r'(<head[^>]*>)'
         match = re.search(pattern, html, re.IGNORECASE)
         
         if match:
-            # 在 <head> 标签后注入
             injection = '\n'.join(script_tags)
-            replacement = match.group(1) + '\n' + injection
-            html = re.sub(pattern, replacement, html, count=1, flags=re.IGNORECASE)
+            html = html[:match.end()] + '\n' + injection + html[match.end():]
         else:
-            # 没有 head 标签，记录警告
             self._logger.warning("HTML 中未找到 <head> 标签，无法注入 head_start 脚本")
         
         return html
@@ -552,23 +579,18 @@ class ScriptInjector:
         Returns:
             注入后的 HTML
         """
-        # 生成脚本标签
         script_tags = self._generate_script_tags(scripts)
         
         if not script_tags:
             return html
         
-        # 查找 </head> 标签
         pattern = r'(</head>)'
         match = re.search(pattern, html, re.IGNORECASE)
         
         if match:
-            # 在 </head> 标签前注入
             injection = '\n'.join(script_tags)
-            replacement = injection + '\n' + match.group(1)
-            html = re.sub(pattern, replacement, html, count=1, flags=re.IGNORECASE)
+            html = html[:match.start()] + injection + '\n' + html[match.start():]
         else:
-            # 没有 head 结束标签，记录警告
             self._logger.warning("HTML 中未找到 </head> 标签，无法注入 head_end 脚本")
         
         return html
@@ -588,23 +610,18 @@ class ScriptInjector:
         Returns:
             注入后的 HTML
         """
-        # 生成脚本标签
         script_tags = self._generate_script_tags(scripts)
         
         if not script_tags:
             return html
         
-        # 查找 <body> 标签
         pattern = r'(<body[^>]*>)'
         match = re.search(pattern, html, re.IGNORECASE)
         
         if match:
-            # 在 <body> 标签后注入
             injection = '\n'.join(script_tags)
-            replacement = match.group(1) + '\n' + injection
-            html = re.sub(pattern, replacement, html, count=1, flags=re.IGNORECASE)
+            html = html[:match.end()] + '\n' + injection + html[match.end():]
         else:
-            # 没有 body 标签，记录警告
             self._logger.warning("HTML 中未找到 <body> 标签，无法注入 body_start 脚本")
         
         return html
@@ -624,30 +641,24 @@ class ScriptInjector:
         Returns:
             注入后的 HTML
         """
-        # 生成脚本标签
         script_tags = self._generate_script_tags(scripts)
         
         if not script_tags:
             return html
         
-        # 查找 </body> 标签
         pattern = r'(</body>)'
         match = re.search(pattern, html, re.IGNORECASE)
         
         if match:
-            # 在 </body> 标签前注入
             injection = '\n'.join(script_tags)
-            replacement = injection + '\n' + match.group(1)
-            html = re.sub(pattern, replacement, html, count=1, flags=re.IGNORECASE)
+            html = html[:match.start()] + injection + '\n' + html[match.start():]
         else:
-            # 没有 body 结束标签，尝试在 </html> 前注入
             pattern = r'(</html>)'
             match = re.search(pattern, html, re.IGNORECASE)
             
             if match:
                 injection = '\n'.join(script_tags)
-                replacement = injection + '\n' + match.group(1)
-                html = re.sub(pattern, replacement, html, count=1, flags=re.IGNORECASE)
+                html = html[:match.start()] + injection + '\n' + html[match.start():]
             else:
                 # 没有 body 和 html 结束标签，追加到末尾
                 self._logger.warning(
