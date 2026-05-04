@@ -1,41 +1,41 @@
 {
   "version": "2.0.0",
-  "saved_at": "2026-05-03T17:03:29.040472",
+  "saved_at": "2026-05-04T12:51:29.528856",
   "config": {
     "session_timeout": 1800,
     "cleanup_interval": 60,
     "max_data_size": 1048576
   },
   "sessions": {
-    "d6bba9cc-4d70-4dad-86fc-af00e1ac6da7": {
-      "session_id": "d6bba9cc-4d70-4dad-86fc-af00e1ac6da7",
+    "523aac3b-02c8-49b2-b6c5-10a8f858299f": {
+      "session_id": "523aac3b-02c8-49b2-b6c5-10a8f858299f",
       "client_ip": "127.0.0.1",
-      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-      "created_at": "2026-05-03T16:32:04.765925",
-      "updated_at": "2026-05-03T16:34:57.927602",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0",
+      "created_at": "2026-05-04T12:25:31.551074",
+      "updated_at": "2026-05-04T12:26:28.439006",
       "data": {
-        "first_visit": "2026-05-03T16:32:04.765837",
-        "last_visit": "2026-05-03T16:34:57.927566",
+        "first_visit": "2026-05-04T12:25:31.550919",
+        "last_visit": "2026-05-04T12:26:28.438963",
         "cookies": {
-          "BAIDUID": {
-            "value": "545CCA316F19CB6E0D5C6795C3495DCF:FG=1",
-            "domain": "www.baidu.com"
+          "path": {
+            "value": "/",
+            "domain": "www.51cto.com"
           }
         }
       }
     }
   },
   "last_access": {
-    "d6bba9cc-4d70-4dad-86fc-af00e1ac6da7": 1777797297.9287658
+    "523aac3b-02c8-49b2-b6c5-10a8f858299f": 1777868788.439981
   },
   "stats": {
-    "total_sessions": 1,
+    "total_sessions": 2,
     "active_sessions": 1,
-    "expired_sessions": 0,
-    "total_creates": 1,
-    "total_deletes": 0,
-    "total_updates": 7,
-    "total_gets": 8,
+    "expired_sessions": 1,
+    "total_creates": 2,
+    "total_deletes": 1,
+    "total_updates": 84,
+    "total_gets": 86,
     "data_size_violations": 0
   }
 }

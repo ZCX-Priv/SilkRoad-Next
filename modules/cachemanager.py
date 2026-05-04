@@ -194,7 +194,7 @@ class CacheManager:
         meta_file = os.path.join(self.disk_cache_dir, f"{cache_key}.meta")
 
         try:
-            def _read():
+            def _read() -> Tuple[Optional[bytes], Optional[str], bool]:
                 with open(meta_file, 'r', encoding='utf-8') as f:
                     meta = json.load(f)
                 if time.time() > meta['expire_time']:
@@ -209,7 +209,7 @@ class CacheManager:
                 return None
 
             if data is not None:
-                return (data, content_type)
+                return (data, content_type or '')
 
         except FileNotFoundError:
             return None
