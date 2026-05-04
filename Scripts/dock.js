@@ -8,204 +8,252 @@
         const style = document.createElement('style');
         style.textContent = `
             .silkroad-dock {
-                position: fixed;
-                bottom: 20px;
-                left: 50%;
-                transform: translateX(-50%);
-                background-color: rgba(40, 44, 52, 0.95);
-                color: white;
-                padding: 12px 20px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                z-index: 9999;
-                transition: all 0.3s ease;
-                box-shadow: 0 5px 25px rgba(0, 0, 0, 0.25);
-                font-family: 'Segoe UI', Arial, sans-serif;
-                border-radius: 50px;
-                max-width: 90%;
-                width: auto;
+                position: fixed !important;
+                bottom: 20px !important;
+                left: 50% !important;
+                transform: translateX(-50%) !important;
+                background-color: rgba(40, 44, 52, 0.95) !important;
+                color: white !important;
+                padding: 8px 16px !important;
+                display: flex !important;
+                justify-content: space-between !important;
+                align-items: center !important;
+                z-index: 9999 !important;
+                transition: all 0.3s ease !important;
+                box-shadow: 0 5px 25px rgba(0, 0, 0, 0.25) !important;
+                font-family: 'Segoe UI', Arial, sans-serif !important;
+                border-radius: 50px !important;
+                max-width: 90% !important;
+                width: auto !important;
             }
             .silkroad-dock.light-mode {
-                background-color: rgba(240, 240, 240, 0.95);
-                color: #333;
-                box-shadow: 0 5px 25px rgba(0, 0, 0, 0.15);
+                background-color: rgba(240, 240, 240, 0.95) !important;
+                color: #333 !important;
+                box-shadow: 0 5px 25px rgba(0, 0, 0, 0.15) !important;
             }
-            /* 白昼模式下的按钮和图标颜色 */
             .silkroad-dock.light-mode .silkroad-dock-button svg,
             .silkroad-dock.light-mode .silkroad-dock-clear svg,
             .silkroad-dock.light-mode .silkroad-dock-theme svg,
             .silkroad-dock.light-mode .silkroad-dock-handle svg {
-                fill: #333;
+                fill: #333 !important;
             }
             .silkroad-dock-theme {
-                background-color: transparent;
-                border: none;
-                color: white;
-                width: 40px;
-                height: 40px;
-                border-radius: 50%;
-                cursor: pointer;
-                transition: all 0.2s;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                margin-left: 15px; /* 右边距，与扫把按钮间隔 */
+                background-color: transparent !important;
+                border: none !important;
+                color: white !important;
+                width: 36px !important;
+                height: 36px !important;
+                border-radius: 50% !important;
+                cursor: pointer !important;
+                transition: all 0.2s !important;
+                display: flex !important;
+                justify-content: center !important;
+                align-items: center !important;
+                margin-left: 10px !important;
             }
             .silkroad-dock-theme:hover {
-                background-color: rgba(255, 255, 255, 0.15);
-                transform: translateY(-3px);
+                background-color: rgba(255, 255, 255, 0.15) !important;
+                transform: translateY(-3px) !important;
             }
             .silkroad-dock-theme svg {
-                width: 20px;
-                height: 20px;
-                fill: white;
+                width: 18px !important;
+                height: 18px !important;
+                fill: white !important;
             }
             .silkroad-dock.collapsed {
-                width: 60px;
-                height: 60px;
-                border-radius: 50%;
-                padding: 0;
-                overflow: hidden;
-                justify-content: center;
+                width: 50px !important;
+                height: 50px !important;
+                border-radius: 50% !important;
+                padding: 0 !important;
+                overflow: hidden !important;
+                justify-content: center !important;
             }
             .silkroad-dock.collapsed .silkroad-dock-buttons,
             .silkroad-dock.collapsed .silkroad-dock-url,
             .silkroad-dock.collapsed .silkroad-dock-clear,
             .silkroad-dock.collapsed .silkroad-dock-theme {
-                display: none;
+                display: none !important;
             }
             .silkroad-dock-handle {
-                width: 40px;
-                height: 40px;
-                border-radius: 50%;
-                background-color: rgba(255, 255, 255, 0.1);
-                cursor: pointer;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                transition: all 0.3s ease;
-                margin-left: 15px; /* 改为左边距 */
+                width: 36px !important;
+                height: 36px !important;
+                border-radius: 50% !important;
+                background-color: rgba(255, 255, 255, 0.1) !important;
+                cursor: pointer !important;
+                display: flex !important;
+                justify-content: center !important;
+                align-items: center !important;
+                transition: all 0.3s ease !important;
+                margin-left: 10px !important;
             }
             .silkroad-dock.collapsed .silkroad-dock-handle {
-                margin: 0;
-                width: 30px;
-                height: 30px;
+                margin: 0 !important;
+                width: 26px !important;
+                height: 26px !important;
             }
             .silkroad-dock-handle:hover {
-                background-color: rgba(255, 255, 255, 0.2);
+                background-color: rgba(255, 255, 255, 0.2) !important;
             }
             .silkroad-dock-handle svg {
-                width: 20px;
-                height: 20px;
-                fill: white;
-                transition: transform 0.3s ease;
-                transform: rotate(180deg); /* 默认状态箭头朝下 */
+                width: 18px !important;
+                height: 18px !important;
+                fill: white !important;
+                transition: transform 0.3s ease !important;
+                transform: rotate(180deg) !important;
             }
             .silkroad-dock.collapsed .silkroad-dock-handle svg {
-                transform: rotate(0deg); /* 折叠状态箭头朝上 */
+                transform: rotate(0deg) !important;
             }
             .silkroad-dock-buttons {
-                display: flex;
-                gap: 15px; 
+                display: flex !important;
+                gap: 10px !important;
             }
             .silkroad-dock-button {
-                background-color: transparent;
-                border: none;
-                color: white;
-                width: 40px;
-                height: 40px;
-                border-radius: 50%;
-                cursor: pointer;
-                transition: all 0.2s;
-                display: flex;
-                justify-content: center;
-                align-items: center;
+                background-color: transparent !important;
+                border: none !important;
+                color: white !important;
+                width: 36px !important;
+                height: 36px !important;
+                border-radius: 50% !important;
+                cursor: pointer !important;
+                transition: all 0.2s !important;
+                display: flex !important;
+                justify-content: center !important;
+                align-items: center !important;
             }
             .silkroad-dock-button:hover {
-                background-color: rgba(255, 255, 255, 0.15);
-                transform: translateY(-3px);
+                background-color: rgba(255, 255, 255, 0.15) !important;
+                transform: translateY(-3px) !important;
             }
             .silkroad-dock-button svg {
-                width: 20px;
-                height: 20px;
-                fill: white;
+                width: 18px !important;
+                height: 18px !important;
+                fill: white !important;
             }
             .silkroad-dock-clear {
-                background-color: transparent;
-                border: none;
-                color: white;
-                width: 40px;
-                height: 40px;
-                border-radius: 50%;
-                cursor: pointer;
-                transition: all 0.2s;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                margin-left: 15px; /* 改为左边距 */
+                background-color: transparent !important;
+                border: none !important;
+                color: white !important;
+                width: 36px !important;
+                height: 36px !important;
+                border-radius: 50% !important;
+                cursor: pointer !important;
+                transition: all 0.2s !important;
+                display: flex !important;
+                justify-content: center !important;
+                align-items: center !important;
+                margin-left: 10px !important;
             }
             .silkroad-dock-clear:hover {
-                background-color: rgba(255, 255, 255, 0.15);
-                transform: translateY(-3px);
+                background-color: rgba(255, 255, 255, 0.15) !important;
+                transform: translateY(-3px) !important;
             }
             .silkroad-dock-clear svg {
-                width: 20px;
-                height: 20px;
-                fill: white;
+                width: 18px !important;
+                height: 18px !important;
+                fill: white !important;
             }
             .silkroad-dock-url {
-                flex-grow: 1;
-                margin: 0 0 0 20px; /* 只保留左边距 */
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                font-size: 14px;
-                opacity: 0.9;
-                background-color: rgba(255, 255, 255, 0.1);
-                padding: 8px 15px;
-                border-radius: 20px;
-                max-width: 300px;
-                cursor: pointer;
-                transition: all 0.2s;
+                flex-grow: 1 !important;
+                margin: 0 0 0 15px !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+                font-size: 13px !important;
+                opacity: 0.9 !important;
+                background-color: rgba(255, 255, 255, 0.1) !important;
+                padding: 6px 12px !important;
+                border-radius: 20px !important;
+                max-width: 300px !important;
+                cursor: pointer !important;
+                transition: all 0.2s !important;
+                display: flex !important;
+                align-items: center !important;
+                gap: 8px !important;
             }
             .silkroad-dock-url:hover {
-                background-color: rgba(255, 255, 255, 0.2);
+                background-color: rgba(255, 255, 255, 0.2) !important;
+            }
+            .silkroad-dock-url-input {
+                flex-grow: 1 !important;
+                background: transparent !important;
+                border: none !important;
+                outline: none !important;
+                color: inherit !important;
+                font-size: 13px !important;
+                font-family: inherit !important;
+                min-width: 0 !important;
+                text-align: center !important;
+            }
+            .silkroad-dock-url-input.text-left {
+                text-align: left !important;
+            }
+            .silkroad-dock-url-input::placeholder {
+                color: rgba(255, 255, 255, 0.5) !important;
+            }
+            .silkroad-dock-go {
+                background-color: transparent !important;
+                border: none !important;
+                color: white !important;
+                width: 24px !important;
+                height: 24px !important;
+                border-radius: 50% !important;
+                cursor: pointer !important;
+                transition: all 0.2s !important;
+                display: flex !important;
+                justify-content: center !important;
+                align-items: center !important;
+                flex-shrink: 0 !important;
+            }
+            .silkroad-dock-go:hover {
+                background-color: rgba(255, 255, 255, 0.15) !important;
+                transform: translateY(-2px) !important;
+            }
+            .silkroad-dock-go svg {
+                width: 14px !important;
+                height: 14px !important;
+                fill: white !important;
+            }
+            .silkroad-dock-go.loading svg {
+                animation: spin 1s linear infinite !important;
+            }
+            @keyframes spin {
+                from { transform: rotate(0deg); }
+                to { transform: rotate(360deg); }
             }
             .silkroad-notification {
-                position: fixed;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                background-color: rgba(40, 44, 52, 0.95);
-                color: white;
-                padding: 10px 20px;
-                border-radius: 20px;
-                font-size: 14px;
-                box-shadow: 0 5px 25px rgba(0, 0, 0, 0.25);
-                z-index: 9998;
-                opacity: 0;
-                transition: all 0.3s ease;
-                pointer-events: none;
-                display: flex;
-                align-items: center;
+                position: fixed !important;
+                top: 50% !important;
+                left: 50% !important;
+                transform: translate(-50%, -50%) !important;
+                background-color: rgba(40, 44, 52, 0.95) !important;
+                color: white !important;
+                padding: 10px 20px !important;
+                border-radius: 20px !important;
+                font-size: 14px !important;
+                box-shadow: 0 5px 25px rgba(0, 0, 0, 0.25) !important;
+                z-index: 9998 !important;
+                opacity: 0 !important;
+                transition: all 0.3s ease !important;
+                pointer-events: none !important;
+                display: flex !important;
+                align-items: center !important;
             }
             .silkroad-notification.show {
-                opacity: 1;
-                /* 移除bottom属性，因为我们现在使用top和transform来居中 */
+                opacity: 1 !important;
             }
             .silkroad-notification-icon {
-                margin-right: 10px;
-                width: 20px;
-                height: 20px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
+                margin-right: 10px !important;
+                width: 20px !important;
+                height: 20px !important;
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
             }
             .silkroad-notification-icon svg {
-                width: 20px;
-                height: 20px;
-                fill: #4CAF50;
+                width: 20px !important;
+                height: 20px !important;
+                fill: #4CAF50 !important;
             }
         `;
         document.head.appendChild(style);
@@ -244,7 +292,7 @@
         homeBtn.title = '返回首页';
         homeBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z"/></svg>`;
         homeBtn.addEventListener('click', function() {
-            // 直接跳转到根路径
+            window.stop();
             window.location.href = '/';
         });
         buttons.appendChild(homeBtn);
@@ -255,6 +303,7 @@
         backBtn.title = '返回上一页';
         backBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M20,11V13H8L13.5,18.5L12.08,19.92L4.16,12L12.08,4.08L13.5,5.5L8,11H20Z"/></svg>`;
         backBtn.addEventListener('click', function() {
+            window.stop();
             window.history.back();
         });
         buttons.appendChild(backBtn);
@@ -263,9 +312,33 @@
         const refreshBtn = document.createElement('button');
         refreshBtn.className = 'silkroad-dock-button';
         refreshBtn.title = '刷新页面';
-        refreshBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>`;
+        
+        const refreshIcon = `<svg viewBox="0 0 24 24"><path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>`;
+        const stopIcon = `<svg viewBox="0 0 24 24"><path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z"/></svg>`;
+        
+        let isLoading = false;
+        
+        function setLoadingState(loading) {
+            isLoading = loading;
+            if (loading) {
+                refreshBtn.innerHTML = stopIcon;
+                refreshBtn.title = '停止加载';
+            } else {
+                refreshBtn.innerHTML = refreshIcon;
+                refreshBtn.title = '刷新页面';
+            }
+        }
+        
+        refreshBtn.innerHTML = refreshIcon;
+        
         refreshBtn.addEventListener('click', function() {
-            location.reload();
+            if (isLoading) {
+                window.stop();
+                setLoadingState(false);
+            } else {
+                setLoadingState(true);
+                location.reload();
+            }
         });
         buttons.appendChild(refreshBtn);
         
@@ -274,32 +347,65 @@
         // URL显示区域
         const urlDisplay = document.createElement('div');
         urlDisplay.className = 'silkroad-dock-url';
-        urlDisplay.title = '点击复制URL';
         
-        // 提取并显示实际访问的URL（去除代理前缀）- 增强健壮性
-        let currentUrl = '';
+        // 创建输入框
+        const urlInput = document.createElement('input');
+        urlInput.className = 'silkroad-dock-url-input';
+        urlInput.type = 'text';
+        urlInput.title = '编辑URL后按Enter或点击前往按钮';
+        
+        // 创建前往按钮
+        const goBtn = document.createElement('button');
+        goBtn.className = 'silkroad-dock-go';
+        goBtn.title = '前往';
+        goBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M4,10V14H13L9.5,17.5L11.92,19.92L19.84,12L11.92,4.08L9.5,6.5L13,10H4Z"/></svg>`;
+        
+        // 提取并显示实际访问的URL（去除代理前缀）
+        let originalUrl = '';
         try {
-            currentUrl = window.location.href || '';
-            
-            // 尝试从代理URL中提取实际URL
-            if (currentUrl) {
-                const proxyMatch = currentUrl.match(/https?:\/\/[^\/]+\/(https?:\/\/.+)/);
-                if (proxyMatch && proxyMatch[1] && proxyMatch[1].startsWith('http')) {
-                    currentUrl = proxyMatch[1];
-                }
+            const proxyUrl = window.location.href || '';
+            const url = new URL(proxyUrl);
+            originalUrl = url.pathname.substring(1) + url.search + url.hash;
+            if (!originalUrl) {
+                originalUrl = '/';
             }
         } catch (e) {
             console.error('获取URL失败:', e);
-            currentUrl = '无法获取URL';
+            originalUrl = window.location.href || '/';
         }
         
-        // 确保URL不为空
-        if (!currentUrl) {
-            currentUrl = '无法获取URL';
-        }
-        
-        urlDisplay.textContent = currentUrl;
+        urlInput.value = originalUrl;
+        urlDisplay.appendChild(urlInput);
+        urlDisplay.appendChild(goBtn);
         dock.appendChild(urlDisplay);
+        
+        // 检测输入框内容长度，决定对齐方式
+        function updateInputAlignment() {
+            const inputWidth = urlInput.scrollWidth;
+            const containerWidth = urlInput.clientWidth;
+            if (inputWidth > containerWidth) {
+                urlInput.classList.add('text-left');
+            } else {
+                urlInput.classList.remove('text-left');
+            }
+        }
+        
+        // 页面加载状态监听
+        // 初始状态：如果页面正在加载则显示叉号，否则显示刷新图标
+        setLoadingState(document.readyState !== 'complete');
+        
+        // 监听页面加载完成
+        window.addEventListener('load', function() {
+            setLoadingState(false);
+        });
+        
+        document.addEventListener('readystatechange', function() {
+            if (document.readyState === 'complete') {
+                setLoadingState(false);
+            } else {
+                setLoadingState(true);
+            }
+        });
         
         // 白昼/夜间模式切换按钮 - 放在URL容器右侧，扫把按钮左侧
         const themeToggleBtn = document.createElement('button');
@@ -439,97 +545,34 @@
         handle.innerHTML = `<svg viewBox="0 0 24 24"><path d="M7.41,15.41L12,10.83L16.59,15.41L18,14L12,8L6,14L7.41,15.41Z"/></svg>`;
         dock.appendChild(handle);
         
-        // 添加点击复制URL功能
-        urlDisplay.addEventListener('click', function() {
-            // 确保有URL可复制
-            if (!currentUrl || currentUrl === '无法获取URL') {
-                // 创建通知元素的副本
-                const errorNotification = notification.cloneNode(true);
-                errorNotification.innerHTML = `<span>无法获取有效URL</span>`;
-                
-                // 显示通知
-                document.body.appendChild(errorNotification);
-                setTimeout(function() {
-                    errorNotification.classList.add('show');
-                    
-                    // 2秒后隐藏通知
-                    setTimeout(function() {
-                        errorNotification.classList.remove('show');
-                        
-                        // 动画完成后移除通知元素
-                        setTimeout(function() {
-                            if (errorNotification.parentNode) {
-                                errorNotification.parentNode.removeChild(errorNotification);
-                            }
-                        }, 300);
-                    }, 2000);
-                }, 10);
+        // 导航函数
+        function navigateToUrl() {
+            let inputValue = urlInput.value.trim();
+            if (!inputValue) {
                 return;
             }
-            
-            // 创建临时文本区域
-            const textarea = document.createElement('textarea');
-            textarea.value = currentUrl;
-            textarea.style.position = 'absolute';
-            textarea.style.left = '-9999px';
-            document.body.appendChild(textarea);
-            
-            try {
-                // 选择文本并复制
-                textarea.select();
-                const successful = document.execCommand('copy');
-                
-                // 移除临时元素
-                document.body.removeChild(textarea);
-                
-                // 显示通知
-                const copyNotification = notification.cloneNode(true);
-                copyNotification.innerHTML = `<span>${successful ? '链接已复制到剪贴板' : '复制失败，请重试'}</span>`;
-                
-                document.body.appendChild(copyNotification);
-                setTimeout(function() {
-                    copyNotification.classList.add('show');
-                    
-                    // 2秒后隐藏通知
-                    setTimeout(function() {
-                        copyNotification.classList.remove('show');
-                        
-                        // 动画完成后移除通知元素
-                        setTimeout(function() {
-                            if (copyNotification.parentNode) {
-                                copyNotification.parentNode.removeChild(copyNotification);
-                            }
-                        }, 300);
-                    }, 2000);
-                }, 10);
-            } catch (e) {
-                console.error('复制URL失败:', e);
-                // 移除临时元素
-                if (textarea.parentNode) {
-                    document.body.removeChild(textarea);
-                }
-                
-                // 显示错误通知
-                const errorNotification = notification.cloneNode(true);
-                errorNotification.innerHTML = `<span>复制失败，请重试</span>`;
-                
-                document.body.appendChild(errorNotification);
-                setTimeout(function() {
-                    errorNotification.classList.add('show');
-                    
-                    // 2秒后隐藏通知
-                    setTimeout(function() {
-                        errorNotification.classList.remove('show');
-                        
-                        // 动画完成后移除通知元素
-                        setTimeout(function() {
-                            if (errorNotification.parentNode) {
-                                errorNotification.parentNode.removeChild(errorNotification);
-                            }
-                        }, 300);
-                    }, 2000);
-                }, 10);
+            inputValue = inputValue.replace(/^\//, '');
+            setLoadingState(true);
+            window.location.href = '/' + inputValue;
+        }
+        
+        // 输入框事件：更新对齐方式
+        urlInput.addEventListener('input', function() {
+            setTimeout(updateInputAlignment, 0);
+        });
+        
+        // 输入框事件：按 Enter 键导航
+        urlInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                navigateToUrl();
             }
+        });
+        
+        // 前往按钮点击事件
+        goBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            navigateToUrl();
         });
         
         // 添加到页面

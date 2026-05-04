@@ -461,9 +461,16 @@ class NormalHandler:
             status_line = f"HTTP/1.1 {response.status} {response.reason}\r\n"
             writer.write(status_line.encode('utf-8'))
 
+            skip_headers = {
+                'transfer-encoding',
+                'content-security-policy',
+                'content-security-policy-report-only',
+                'set-cookie',
+                'content-length',
+            }
             for key, value in response.headers.items():
                 key_lower = key.lower()
-                if key_lower in ['transfer-encoding', 'content-security-policy', 'content-security-policy-report-only', 'set-cookie']:
+                if key_lower in skip_headers:
                     continue
                 if key_lower == 'location' and self.url_handler:
                     value = self.url_handler.rewrite_location_header(value, '')
@@ -473,6 +480,7 @@ class NormalHandler:
                     value = self.url_handler.location_handler.rewrite_refresh_header(value, '')
                 writer.write(f"{key}: {value}\r\n".encode('utf-8'))
 
+            writer.write(b"Transfer-Encoding: chunked\r\n")
             writer.write(b"Via: SilkRoad-Next/2.0\r\n")
             writer.write(b"\r\n")
 
@@ -480,9 +488,15 @@ class NormalHandler:
             total_bytes = 0
 
             async for chunk in response.content.iter_chunked(chunk_size):
+                chunk_size_hex = format(len(chunk), 'x')
+                writer.write(f"{chunk_size_hex}\r\n".encode('utf-8'))
                 writer.write(chunk)
+                writer.write(b"\r\n")
                 await writer.drain()
                 total_bytes += len(chunk)
+
+            writer.write(b"0\r\n\r\n")
+            await writer.drain()
 
             self.logger.info(f"流式传输完成: {total_bytes} bytes")
 
