@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import aiohttp
 from collections import OrderedDict
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -444,8 +445,6 @@ class CacheManager:
                 return None
 
     async def warmup(self, urls: list, ttl: Optional[int] = None):
-        import aiohttp
-
         ttl = ttl or self.default_ttl
         success_count = 0
         fail_count = 0
