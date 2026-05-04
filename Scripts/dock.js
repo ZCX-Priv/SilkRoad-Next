@@ -12,7 +12,7 @@
                 bottom: 20px;
                 left: 50%;
                 transform: translateX(-50%);
-                background-color: rgba(40, 44, 52, 0.85); /* 夜间模式背景色 */
+                background-color: rgba(40, 44, 52, 0.95);
                 color: white;
                 padding: 12px 20px;
                 display: flex;
@@ -23,14 +23,11 @@
                 box-shadow: 0 5px 25px rgba(0, 0, 0, 0.25);
                 font-family: 'Segoe UI', Arial, sans-serif;
                 border-radius: 50px;
-                backdrop-filter: blur(10px);
-                -webkit-backdrop-filter: blur(10px);
                 max-width: 90%;
                 width: auto;
             }
-            /* 白昼模式的dock栏样式 */
             .silkroad-dock.light-mode {
-                background-color: rgba(240, 240, 240, 0.85);
+                background-color: rgba(240, 240, 240, 0.95);
                 color: #333;
                 box-shadow: 0 5px 25px rgba(0, 0, 0, 0.15);
             }
@@ -176,18 +173,16 @@
                 background-color: rgba(255, 255, 255, 0.2);
             }
             .silkroad-notification {
-                position: fixed; /* 改为fixed以便固定在屏幕中央 */
-                top: 50%; /* 从顶部50%开始 */
+                position: fixed;
+                top: 50%;
                 left: 50%;
-                transform: translate(-50%, -50%); /* 水平和垂直方向都居中 */
-                background-color: rgba(40, 44, 52, 0.85);
+                transform: translate(-50%, -50%);
+                background-color: rgba(40, 44, 52, 0.95);
                 color: white;
                 padding: 10px 20px;
                 border-radius: 20px;
                 font-size: 14px;
                 box-shadow: 0 5px 25px rgba(0, 0, 0, 0.25);
-                backdrop-filter: blur(10px);
-                -webkit-backdrop-filter: blur(10px);
                 z-index: 9998;
                 opacity: 0;
                 transition: all 0.3s ease;

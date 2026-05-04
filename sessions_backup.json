@@ -1,21 +1,41 @@
 {
   "version": "2.0.0",
-  "saved_at": "2026-05-04T13:08:04.011196",
+  "saved_at": "2026-05-04T14:17:13.921300",
   "config": {
     "session_timeout": 1800,
     "cleanup_interval": 60,
     "max_data_size": 1048576
   },
-  "sessions": {},
-  "last_access": {},
+  "sessions": {
+    "0f306ccb-25b1-4f91-b9dc-ea95ec1de04f": {
+      "session_id": "0f306ccb-25b1-4f91-b9dc-ea95ec1de04f",
+      "client_ip": "127.0.0.1",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+      "created_at": "2026-05-04T14:12:46.915871",
+      "updated_at": "2026-05-04T14:16:01.455470",
+      "data": {
+        "first_visit": "2026-05-04T14:12:46.915805",
+        "cookies": {
+          "PHPSESSID": {
+            "value": "cedcda0623751eec17e2a53d8b4c36e0",
+            "domain": "www.zhidx.com"
+          }
+        },
+        "last_visit": "2026-05-04T14:16:01.455445"
+      }
+    }
+  },
+  "last_access": {
+    "0f306ccb-25b1-4f91-b9dc-ea95ec1de04f": 1777875361.4554741
+  },
   "stats": {
-    "total_sessions": 0,
-    "active_sessions": 0,
+    "total_sessions": 1,
+    "active_sessions": 1,
     "expired_sessions": 0,
-    "total_creates": 0,
+    "total_creates": 1,
     "total_deletes": 0,
-    "total_updates": 0,
-    "total_gets": 0,
+    "total_updates": 341,
+    "total_gets": 107,
     "data_size_violations": 0
   }
 }
