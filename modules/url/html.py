@@ -166,28 +166,18 @@ class HTMLHandler:
 
     async def _inject_csp_meta(self, html: str) -> str:
         """
-        移除原始CSP meta标签并注入宽松的CSP
-
+        移除原始CSP meta标签
+        
         Args:
             html: HTML文本
-
+        
         Returns:
             处理后的HTML
         """
         html = self.csp_meta_pattern.sub('', html)
-
-        csp_meta = '<meta http-equiv="Content-Security-Policy" content="default-src * \'unsafe-inline\' \'unsafe-eval\' data: blob:; img-src * data: blob:; media-src * data: blob:; font-src * data:;">'
-
-        if '<head>' in html:
-            html = html.replace('<head>', f'<head>\n    {csp_meta}')
-        elif '<HEAD>' in html:
-            html = html.replace('<HEAD>', f'<HEAD>\n    {csp_meta}')
-        elif '<html>' in html:
-            html = html.replace('<html>', f'<html>\n<head>\n    {csp_meta}\n</head>')
-        else:
-            html = csp_meta + '\n' + html
-
+        
         return html
+
 
     async def _rewrite_tag_attr(
         self,
