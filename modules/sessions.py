@@ -15,6 +15,7 @@
 
 import asyncio
 import json
+import sys
 import time
 import uuid
 from loguru import logger as loguru_logger
@@ -144,17 +145,11 @@ class SessionManager:
         return str(uuid.uuid4())
     
     def _calculate_data_size(self, data: dict) -> int:
-        """
-        计算会话数据大小
-        
-        Args:
-            data: 会话数据字典
-            
-        Returns:
-            数据大小（字节）
-        """
         try:
-            return len(json.dumps(data, ensure_ascii=False))
+            total = 0
+            for k, v in data.items():
+                total += sys.getsizeof(k) + sys.getsizeof(v)
+            return total
         except (TypeError, ValueError):
             return 0
     
@@ -576,8 +571,11 @@ class SessionManager:
                 }
                 
                 # 写入文件
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+                def _write():
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+
+                await asyncio.to_thread(_write)
                 
                 self._logger.info(
                     f"会话数据保存成功: {file_path}, "
@@ -602,8 +600,11 @@ class SessionManager:
         """
         async with self._lock:
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+                def _read():
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+
+                data = await asyncio.to_thread(_read)
                 
                 # 验证数据格式
                 if 'sessions' not in data:

@@ -58,6 +58,7 @@ class BlacklistManager:
         # 黑名单存储
         self._ip_blacklist: Set[str] = set()
         self._ip_range_blacklist: List[str] = []
+        self._compiled_blacklist_ranges: List[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
         self._domain_blacklist: Set[str] = set()
         self._url_blacklist: Set[str] = set()
         self._url_pattern_blacklist: List[re.Pattern] = []
@@ -65,8 +66,9 @@ class BlacklistManager:
         # 白名单（优先级高于黑名单）
         self._ip_whitelist: Set[str] = set()
         self._ip_range_whitelist: List[str] = []
+        self._compiled_whitelist_ranges: List[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
         self._domain_whitelist: Set[str] = set()
-        
+
         # 锁机制，确保线程安全
         self._lock = asyncio.Lock()
         
@@ -106,20 +108,20 @@ class BlacklistManager:
                 
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                
-                # 加载 IP 黑名单
+
                 self._ip_blacklist = set(config.get('ip_blacklist', []))
-                
-                # 加载 IP 范围黑名单（CIDR 格式）
+
                 self._ip_range_blacklist = config.get('ip_range_blacklist', [])
-                
-                # 加载域名黑名单
+                self._compiled_blacklist_ranges = []
+                for ip_range in self._ip_range_blacklist:
+                    try:
+                        self._compiled_blacklist_ranges.append(ipaddress.ip_network(ip_range, strict=False))
+                    except ValueError:
+                        continue
+
                 self._domain_blacklist = set(config.get('domain_blacklist', []))
-                
-                # 加载 URL 黑名单
                 self._url_blacklist = set(config.get('url_blacklist', []))
-                
-                # 编译 URL 正则表达式
+
                 url_patterns = config.get('url_pattern_blacklist', [])
                 self._url_pattern_blacklist = []
                 for pattern in url_patterns:
@@ -127,12 +129,16 @@ class BlacklistManager:
                         compiled = re.compile(pattern, re.IGNORECASE)
                         self._url_pattern_blacklist.append(compiled)
                     except re.error:
-                        # 正则表达式编译失败，跳过该模式
                         continue
-                
-                # 加载白名单
+
                 self._ip_whitelist = set(config.get('ip_whitelist', []))
                 self._ip_range_whitelist = config.get('ip_range_whitelist', [])
+                self._compiled_whitelist_ranges = []
+                for ip_range in self._ip_range_whitelist:
+                    try:
+                        self._compiled_whitelist_ranges.append(ipaddress.ip_network(ip_range, strict=False))
+                    except ValueError:
+                        continue
                 self._domain_whitelist = set(config.get('domain_whitelist', []))
                 
                 # 更新状态
@@ -194,10 +200,15 @@ class BlacklistManager:
         
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(default_config, f, ensure_ascii=False, indent=2)
-        
-        # 加载默认配置
+
         self._ip_blacklist = set(default_config['ip_blacklist'])
         self._ip_range_blacklist = default_config['ip_range_blacklist']
+        self._compiled_blacklist_ranges = []
+        for ip_range in self._ip_range_blacklist:
+            try:
+                self._compiled_blacklist_ranges.append(ipaddress.ip_network(ip_range, strict=False))
+            except ValueError:
+                continue
         self._domain_blacklist = set(default_config['domain_blacklist'])
         self._url_blacklist = set(default_config['url_blacklist'])
         self._url_pattern_blacklist = [
@@ -205,6 +216,12 @@ class BlacklistManager:
         ]
         self._ip_whitelist = set(default_config['ip_whitelist'])
         self._ip_range_whitelist = default_config['ip_range_whitelist']
+        self._compiled_whitelist_ranges = []
+        for ip_range in self._ip_range_whitelist:
+            try:
+                self._compiled_whitelist_ranges.append(ipaddress.ip_network(ip_range, strict=False))
+            except ValueError:
+                continue
         self._domain_whitelist = set(default_config['domain_whitelist'])
         
         self._config_loaded = True
@@ -252,15 +269,11 @@ class BlacklistManager:
             # 2. 检查 IP 范围白名单
             try:
                 client_ip_obj = ipaddress.ip_address(client_ip)
-                for ip_range in self._ip_range_whitelist:
-                    try:
-                        if client_ip_obj in ipaddress.ip_network(ip_range, strict=False):
-                            self.stats['whitelist_allowed'] += 1
-                            return False, f"IP {client_ip} in whitelist range {ip_range}"
-                    except ValueError:
-                        continue
+                for network in self._compiled_whitelist_ranges:
+                    if client_ip_obj in network:
+                        self.stats['whitelist_allowed'] += 1
+                        return False, f"IP {client_ip} in whitelist range {network}"
             except ValueError:
-                # 无效的 IP 地址，跳过范围检查
                 pass
             
             # 3. 检查域名白名单
@@ -279,14 +292,11 @@ class BlacklistManager:
             # 5. 检查 IP 范围黑名单
             try:
                 client_ip_obj = ipaddress.ip_address(client_ip)
-                for ip_range in self._ip_range_blacklist:
-                    try:
-                        if client_ip_obj in ipaddress.ip_network(ip_range, strict=False):
-                            self.stats['total_blocked'] += 1
-                            self.stats['ip_blocked'] += 1
-                            return True, f"IP {client_ip} in blacklisted range {ip_range}"
-                    except ValueError:
-                        continue
+                for network in self._compiled_blacklist_ranges:
+                    if client_ip_obj in network:
+                        self.stats['total_blocked'] += 1
+                        self.stats['ip_blocked'] += 1
+                        return True, f"IP {client_ip} in blacklisted range {network}"
             except ValueError:
                 pass
             
@@ -483,9 +493,6 @@ class BlacklistManager:
                 return False
     
     async def _save_config(self) -> None:
-        """
-        保存黑名单配置到文件
-        """
         config = {
             "ip_blacklist": list(self._ip_blacklist),
             "ip_range_blacklist": self._ip_range_blacklist,
@@ -496,13 +503,15 @@ class BlacklistManager:
             "ip_range_whitelist": self._ip_range_whitelist,
             "domain_whitelist": list(self._domain_whitelist)
         }
-        
-        # 确保目录存在
+
         config_path = Path(self.config_file)
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
+
+        def _write():
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+
+        await asyncio.to_thread(_write)
     
     def get_stats(self) -> Dict:
         """
@@ -724,28 +733,22 @@ class BlacklistManager:
             # 检查 IP 范围白名单
             try:
                 client_ip_obj = ipaddress.ip_address(client_ip)
-                for ip_range in self._ip_range_whitelist:
-                    try:
-                        if client_ip_obj in ipaddress.ip_network(ip_range, strict=False):
-                            return False, f"IP in whitelist range {ip_range}"
-                    except ValueError:
-                        continue
+                for network in self._compiled_whitelist_ranges:
+                    if client_ip_obj in network:
+                        return False, f"IP in whitelist range {network}"
             except ValueError:
                 pass
-            
+
             # 检查 IP 黑名单
             if client_ip in self._ip_blacklist:
                 return True, f"IP {client_ip} is blacklisted"
-            
+
             # 检查 IP 范围黑名单
             try:
                 client_ip_obj = ipaddress.ip_address(client_ip)
-                for ip_range in self._ip_range_blacklist:
-                    try:
-                        if client_ip_obj in ipaddress.ip_network(ip_range, strict=False):
-                            return True, f"IP in blacklisted range {ip_range}"
-                    except ValueError:
-                        continue
+                for network in self._compiled_blacklist_ranges:
+                    if client_ip_obj in network:
+                        return True, f"IP in blacklisted range {network}"
             except ValueError:
                 pass
             

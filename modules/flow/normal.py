@@ -16,7 +16,59 @@ if TYPE_CHECKING:
     from modules.cachemanager import CacheManager
 
 
+_ERROR_PAGES: Dict[int, bytes] = {}
+
+
+def _init_error_pages():
+    if _ERROR_PAGES:
+        return
+    template = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Error {status}</title>
+    <style>
+        body {{font-family:Arial,sans-serif;text-align:center;padding:50px;background:#f5f5f5}}
+        .ec{{background:#fff;padding:40px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.1);max-width:600px;margin:0 auto}}
+        h1{{color:#e74c3c;margin-bottom:20px}}p{{color:#666;margin-bottom:30px}}
+        .pb{{color:#999;font-size:12px;margin-top:30px}}
+    </style>
+</head>
+<body><div class="ec"><h1>Error {status}</h1><p>{msg}</p><div class="pb">Powered by SilkRoad-Next/2.0</div></div></body>
+</html>"""
+    for code, msg in [(400, "Bad Request"), (403, "Forbidden"), (404, "Not Found"),
+                       (408, "Request Timeout"), (413, "Payload Too Large"),
+                       (500, "Internal Server Error"), (502, "Bad Gateway"),
+                       (504, "Gateway Timeout"), (508, "Loop Detected")]:
+        html = template.format(status=code, msg=msg)
+        _ERROR_PAGES[code] = html.encode('utf-8')
+
+
+_init_error_pages()
+
+
 class NormalHandler:
+
+    _FILE_EXTENSIONS = frozenset({
+        'js', 'css', 'html', 'htm', 'xml', 'json', 'txt', 'md',
+        'png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp', 'bmp',
+        'mp4', 'mp3', 'avi', 'mov', 'wmv', 'flv', 'wav', 'ogg',
+        'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+        'zip', 'rar', 'tar', 'gz', 'bz2', '7z',
+        'woff', 'woff2', 'ttf', 'eot', 'otf',
+        'php', 'asp', 'aspx', 'jsp', 'cgi', 'pl', 'py', 'rb',
+        'map', 'manifest', 'appcache', 'webmanifest'
+    })
+
+    _TLDS = frozenset({
+        'com', 'org', 'net', 'edu', 'gov', 'mil', 'io', 'co', 'ai', 'dev',
+        'app', 'tech', 'info', 'biz', 'me', 'tv', 'cc', 'cn', 'jp', 'uk',
+        'de', 'fr', 'ru', 'br', 'in', 'au', 'ca', 'nl', 'es', 'it', 'ch',
+        'se', 'no', 'dk', 'pl', 'be', 'at', 'eu', 'us', 'mx', 'tw', 'hk',
+        'sg', 'kr', 'my', 'id', 'th', 'vn', 'ph', 'nz', 'za', 'ar', 'cl',
+        'pe', 've', 'ec', 'pt', 'gr', 'tr', 'ro', 'hu', 'cz', 'sk', 'ua',
+        'by', 'kz', 'ir', 'sa', 'ae', 'eg', 'ng', 'ke'
+    })
 
     def __init__(self, config, logger=None):
         self.config = config
@@ -34,7 +86,7 @@ class NormalHandler:
         self.timeout = config.get('server.proxy.connectionTimeout', 30)
         self.request_timeout = config.get('server.proxy.requestTimeout', 60)
         self.max_redirects = config.get('server.proxy.maxRedirects', 10)
-        self.stream_threshold = config.get('urlRewrite.streamThreshold', 10485760)
+        self.stream_threshold = config.get('urlRewrite.streamThreshold', 524288)
 
     def set_session(self, session: aiohttp.ClientSession):
         self.session = session
@@ -110,7 +162,7 @@ class NormalHandler:
 
                         continue
 
-                    await self._send_response(writer, response, current_url)
+                    await self._send_response(writer, response, current_url, method, headers)
                     return
 
             except asyncio.TimeoutError:
@@ -143,52 +195,31 @@ class NormalHandler:
         is_https = parsed.scheme == 'https'
 
         try:
-            connection = await self.connection_pool.get_connection(
+            client_session = await self.connection_pool.get_session(
                 host, port, is_https, session_id
             )
 
-            if connection is None:
-                connector = aiohttp.TCPConnector(
-                    limit=100,
-                    ttl_dns_cache=300,
-                    enable_cleanup_closed=True
-                )
-
-                self.connection_pool.register_connection(host, port, connector)
-
-                session = aiohttp.ClientSession(
-                    connector=connector,
-                    timeout=aiohttp.ClientTimeout(
-                        total=self.request_timeout,
-                        connect=self.timeout
-                    )
-                )
-            else:
-                session = aiohttp.ClientSession(
-                    connector=connection,
-                    timeout=aiohttp.ClientTimeout(
-                        total=self.request_timeout,
-                        connect=self.timeout
-                    )
-                )
-
             request_headers = headers.copy()
-            if session_id:
-                session_cookies = self.connection_pool.get_session_cookies()
-                if session_cookies:
-                    cookie_header = '; '.join(
-                        f"{name}={value}" for name, value in session_cookies.items()
-                    )
-                    if 'Cookie' in request_headers:
-                        request_headers['Cookie'] = f"{request_headers['Cookie']}; {cookie_header}"
-                    else:
-                        request_headers['Cookie'] = cookie_header
-                    self.logger.debug(
-                        f"V5 会话持久化: 添加 {len(session_cookies)} 个 Cookie 到请求"
-                    )
+            if session_id and self.connection_pool.session_manager:
+                sm = self.connection_pool.session_manager
+                session_data = await sm.get_session(session_id)
+                if session_data:
+                    cookies_data = session_data.get('data', {}).get('cookies', {})
+                    domain_cookies = {}
+                    for cname, cdata in cookies_data.items():
+                        if isinstance(cdata, dict):
+                            cdomain = cdata.get('domain', '')
+                            if not cdomain or host.endswith(cdomain.lstrip('.')) or host == cdomain.lstrip('.'):
+                                domain_cookies[cname] = cdata.get('value', '')
+                    if domain_cookies:
+                        cookie_header = '; '.join(f"{n}={v}" for n, v in domain_cookies.items())
+                        if 'Cookie' in request_headers:
+                            request_headers['Cookie'] = f"{request_headers['Cookie']}; {cookie_header}"
+                        else:
+                            request_headers['Cookie'] = cookie_header
 
             try:
-                async with session.request(
+                async with client_session.request(
                     method,
                     target_url,
                     headers=request_headers,
@@ -196,143 +227,11 @@ class NormalHandler:
                     allow_redirects=False,
                     ssl=False
                 ) as response:
-                    content = await response.read()
-
-                    content_type = response.headers.get('Content-Type', '')
-                    if self._should_rewrite(content_type) and self.url_handler:
-                        try:
-                            content = await self.url_handler.rewrite(
-                                content, content_type, target_url
-                            )
-                        except Exception as e:
-                            self.logger.error(f"URL 修正失败: {e}")
-
-                    self.logger.debug(f"脚本注入检查: script_injector={self.script_injector is not None}, content_type={content_type}")
-                    if self.script_injector and 'text/html' in content_type:
-                        try:
-                            self.logger.info(f"开始脚本注入: {target_url}")
-                            encoding = 'utf-8'
-                            if isinstance(content, bytes):
-                                if 'charset=' in content_type:
-                                    charset = content_type.split('charset=')[-1].split(';')[0].strip()
-                                    if charset:
-                                        encoding = charset
-                                content_str = content.decode(encoding, errors='ignore')
-                            else:
-                                content_str = content
-
-                            content_str = await self.script_injector.inject_scripts(
-                                content_str, target_url, content_type
-                            )
-
-                            if isinstance(content, bytes):
-                                content = content_str.encode(encoding, errors='ignore')
-                            else:
-                                content = content_str
-
-                            self.logger.info(f"脚本注入完成: {target_url}")
-                        except Exception as e:
-                            import traceback
-                            self.logger.error(f"脚本注入失败: {e}\n{traceback.format_exc()}")
-
-                    if isinstance(content, str):
-                        content = content.encode('utf-8', errors='ignore')
-
-                    response_headers = dict(response.headers)
-                    response_headers['Content-Length'] = str(len(content))
-                    response_headers.pop('Content-Encoding', None)
-                    response_headers['Via'] = 'SilkRoad-Next/2.0'
-                    response_headers.pop('Transfer-Encoding', None)
-
-                    if session_id and 'Set-Cookie' in response_headers:
-                        try:
-                            set_cookie_header = response_headers.get('Set-Cookie', '')
-                            if set_cookie_header:
-                                cookies = {}
-                                for cookie_str in set_cookie_header.split(','):
-                                    if '=' in cookie_str:
-                                        cookie_parts = cookie_str.strip().split(';')[0]
-                                        if '=' in cookie_parts:
-                                            name, value = cookie_parts.split('=', 1)
-                                            cookies[name.strip()] = {
-                                                'value': value.strip(),
-                                                'domain': host
-                                            }
-
-                                if cookies and self.connection_pool:
-                                    _sm = getattr(self.connection_pool, 'session_manager', None)  # type: ignore[attr-defined]
-                                    if _sm:
-                                        existing_session = await _sm.get_session(session_id)
-                                        existing_cookies = (existing_session or {}).get('data', {}).get('cookies', {})
-                                        existing_cookies.update(cookies)
-                                        await _sm.update_session(session_id, {'cookies': existing_cookies})
-                                    self.logger.debug(
-                                        f"V5 会话持久化: 保存 {len(cookies)} 个 Cookie 到会话 {session_id}"
-                                    )
-                        except Exception as e:
-                            self.logger.warning(f"保存会话 Cookie 失败: {e}")
-                    response_headers.pop('Content-Security-Policy', None)
-                    response_headers.pop('Content-Security-Policy-Report-Only', None)
-
-                    if 'Location' in response_headers and self.url_handler:
-                        response_headers['Location'] = self.url_handler.rewrite_location_header(
-                            response_headers['Location'], target_url
-                        )
-                        self.logger.debug(f"Location 头重写（连接池）: {response_headers['Location']}")
-
-                    if 'Content-Location' in response_headers and self.url_handler:
-                        response_headers['Content-Location'] = self.url_handler.rewrite_content_location_header(
-                            response_headers['Content-Location'], target_url
-                        )
-
-                    if 'Refresh' in response_headers and self.url_handler and hasattr(self.url_handler, 'location_handler') and self.url_handler.location_handler:
-                        response_headers['Refresh'] = self.url_handler.location_handler.rewrite_refresh_header(
-                            response_headers['Refresh'], target_url
-                        )
-
-                    target_domain = self.cookie_handler.extract_domain_from_url(target_url) if self.cookie_handler else None
-                    set_cookie_values = None
-                    if 'Set-Cookie' in response_headers:
-                        set_cookie_values = response_headers.pop('Set-Cookie')
-                    elif 'set-cookie' in response_headers:
-                        set_cookie_values = response_headers.pop('set-cookie')
-
-                    status_line = f"HTTP/1.1 {response.status} {response.reason}\r\n"
-                    writer.write(status_line.encode('utf-8'))
-
-                    for key, value in response_headers.items():
-                        if key.lower() in ['transfer-encoding', 'set-cookie']:
-                            continue
-                        writer.write(f"{key}: {value}\r\n".encode('utf-8'))
-
-                    if set_cookie_values and target_domain:
-                        if isinstance(set_cookie_values, str):
-                            set_cookie_values = [set_cookie_values]
-
-                        for cookie_value in set_cookie_values:
-                            rewritten_cookie = self.cookie_handler.rewrite_set_cookie(
-                                cookie_value, target_domain
-                            ) if self.cookie_handler else cookie_value
-                            writer.write(f"Set-Cookie: {rewritten_cookie}\r\n".encode('utf-8'))
-
-                    writer.write(b"\r\n")
-                    writer.write(content)
-                    await writer.drain()
-
-                    self.logger.debug(f"响应已发送（连接池）: {response.status} {len(content)} bytes")
-
-                    if self.cache_manager and method == 'GET':
-                        await self.cache_manager.set(
-                            target_url, content, method, headers,
-                            ttl=self.config.get('cache.defaultTTL', 3600)
-                        )
+                    await self._send_response(writer, response, target_url, method, headers, session_id, host, port, is_https)
+                    return
 
             finally:
-                if self.connection_pool and session.connector:
-                    await self.connection_pool.return_connection(
-                        host, port, session.connector  # type: ignore[arg-type]
-                    )
-                await session.close()
+                await self.connection_pool.release_session(host, port, is_https)
 
         except ConnectionError as e:
             self.logger.warning(f"连接池已满，降级到 V1 方式: {e}")
@@ -352,69 +251,116 @@ class NormalHandler:
 
     async def _send_response(self, writer: asyncio.StreamWriter,
                               response: aiohttp.ClientResponse,
-                              target_url: str) -> None:
+                              target_url: str,
+                              method: str,
+                              request_headers: Dict[str, str],
+                              session_id: Optional[str] = None,
+                              host: Optional[str] = None,
+                              port: Optional[int] = None,
+                              is_https: Optional[bool] = None) -> None:
         try:
             content_length = int(response.headers.get('Content-Length', 0))
+            content_type = response.headers.get('Content-Type', '')
 
             if content_length > self.stream_threshold:
-                await self._stream_response(writer, response)
+                await self._stream_response(writer, response, target_url)
                 return
 
             content = await response.read()
 
-            content_type = response.headers.get('Content-Type', '')
             if self._should_rewrite(content_type) and self.url_handler:
                 try:
                     content = await self.url_handler.rewrite(
-                        content,
-                        content_type,
-                        target_url
+                        content, content_type, target_url
                     )
                 except Exception as e:
                     self.logger.error(f"URL 修正失败: {e}")
 
+            if self.script_injector and 'text/html' in content_type:
+                try:
+                    encoding = 'utf-8'
+                    if isinstance(content, bytes):
+                        if 'charset=' in content_type:
+                            charset = content_type.split('charset=')[-1].split(';')[0].strip()
+                            if charset:
+                                encoding = charset
+                        content_str = content.decode(encoding, errors='ignore')
+                    else:
+                        content_str = content
+
+                    content_str = await self.script_injector.inject_scripts(
+                        content_str, target_url, content_type
+                    )
+
+                    if isinstance(content, bytes):
+                        content = content_str.encode(encoding, errors='ignore')
+                    else:
+                        content = content_str
+                except Exception as e:
+                    import traceback
+                    self.logger.error(f"脚本注入失败: {e}\n{traceback.format_exc()}")
+
             if isinstance(content, str):
                 content = content.encode('utf-8', errors='ignore')
 
-            headers = dict(response.headers)
+            resp_headers = dict(response.headers)
+            resp_headers['Content-Length'] = str(len(content))
+            resp_headers.pop('Content-Encoding', None)
+            resp_headers['Via'] = 'SilkRoad-Next/2.0'
+            resp_headers.pop('Transfer-Encoding', None)
 
-            headers['Content-Length'] = str(len(content))
-            headers.pop('Content-Encoding', None)
+            if session_id and 'Set-Cookie' in resp_headers and self.connection_pool and self.connection_pool.session_manager:
+                try:
+                    set_cookie_header = resp_headers.get('Set-Cookie', '')
+                    if set_cookie_header:
+                        cookies = {}
+                        for cookie_str in set_cookie_header.split(','):
+                            if '=' in cookie_str:
+                                cookie_parts = cookie_str.strip().split(';')[0]
+                                if '=' in cookie_parts:
+                                    name, value = cookie_parts.split('=', 1)
+                                    cookies[name.strip()] = {
+                                        'value': value.strip(),
+                                        'domain': host
+                                    }
+                        if cookies:
+                            _sm = self.connection_pool.session_manager
+                            existing_session = await _sm.get_session(session_id)
+                            existing_cookies = (existing_session or {}).get('data', {}).get('cookies', {})
+                            existing_cookies.update(cookies)
+                            await _sm.update_session(session_id, {'cookies': existing_cookies})
+                except Exception as e:
+                    self.logger.warning(f"保存会话 Cookie 失败: {e}")
 
-            headers['Via'] = 'SilkRoad-Next/1.0'
+            resp_headers.pop('Content-Security-Policy', None)
+            resp_headers.pop('Content-Security-Policy-Report-Only', None)
 
-            headers.pop('Transfer-Encoding', None)
-            headers.pop('Content-Security-Policy', None)
-            headers.pop('Content-Security-Policy-Report-Only', None)
-
-            if 'Location' in headers and self.url_handler:
-                headers['Location'] = self.url_handler.rewrite_location_header(
-                    headers['Location'], target_url
+            if 'Location' in resp_headers and self.url_handler:
+                resp_headers['Location'] = self.url_handler.rewrite_location_header(
+                    resp_headers['Location'], target_url
                 )
-                self.logger.debug(f"Location 头重写: {headers['Location']}")
 
-            if 'Content-Location' in headers and self.url_handler:
-                headers['Content-Location'] = self.url_handler.rewrite_content_location_header(
-                    headers['Content-Location'], target_url
+            if 'Content-Location' in resp_headers and self.url_handler:
+                resp_headers['Content-Location'] = self.url_handler.rewrite_content_location_header(
+                    resp_headers['Content-Location'], target_url
                 )
 
-            if 'Refresh' in headers and self.url_handler and hasattr(self.url_handler, 'location_handler') and self.url_handler.location_handler:
-                headers['Refresh'] = self.url_handler.location_handler.rewrite_refresh_header(
-                    headers['Refresh'], target_url
+            if 'Refresh' in resp_headers and self.url_handler and hasattr(self.url_handler, 'location_handler') and self.url_handler.location_handler:
+                resp_headers['Refresh'] = self.url_handler.location_handler.rewrite_refresh_header(
+                    resp_headers['Refresh'], target_url
                 )
 
             target_domain = self.cookie_handler.extract_domain_from_url(target_url) if self.cookie_handler else None
-
             set_cookie_values = None
-            if 'Set-Cookie' in headers:
-                set_cookie_values = headers.pop('Set-Cookie')
-            elif 'set-cookie' in headers:
-                set_cookie_values = headers.pop('set-cookie')
+            if 'Set-Cookie' in resp_headers:
+                set_cookie_values = resp_headers.pop('Set-Cookie')
+            elif 'set-cookie' in resp_headers:
+                set_cookie_values = resp_headers.pop('set-cookie')
 
             status_line = f"HTTP/1.1 {response.status} {response.reason}\r\n"
             writer.write(status_line.encode('utf-8'))
 
-            for key, value in headers.items():
+            for key, value in resp_headers.items():
                 if key.lower() in ['transfer-encoding', 'set-cookie']:
                     continue
                 writer.write(f"{key}: {value}\r\n".encode('utf-8'))
@@ -422,7 +368,6 @@ class NormalHandler:
             if set_cookie_values and target_domain:
                 if isinstance(set_cookie_values, str):
                     set_cookie_values = [set_cookie_values]
-
                 for cookie_value in set_cookie_values:
                     rewritten_cookie = self.cookie_handler.rewrite_set_cookie(
                         cookie_value, target_domain
@@ -430,18 +375,25 @@ class NormalHandler:
                     writer.write(f"Set-Cookie: {rewritten_cookie}\r\n".encode('utf-8'))
 
             writer.write(b"\r\n")
-
             writer.write(content)
             await writer.drain()
 
             self.logger.debug(f"响应已发送: {response.status} {len(content)} bytes")
+
+            if self.cache_manager and method == 'GET':
+                await self.cache_manager.set(
+                    target_url, content, method, request_headers,
+                    ttl=self.config.get('cache.defaultTTL', 3600),
+                    content_type=content_type
+                )
 
         except Exception as e:
             self.logger.error(f"发送响应失败: {e}")
             raise
 
     async def _stream_response(self, writer: asyncio.StreamWriter,
-                                response: aiohttp.ClientResponse) -> None:
+                                response: aiohttp.ClientResponse,
+                                target_url: str) -> None:
         try:
             status_line = f"HTTP/1.1 {response.status} {response.reason}\r\n"
             writer.write(status_line.encode('utf-8'))
@@ -450,21 +402,18 @@ class NormalHandler:
                 key_lower = key.lower()
                 if key_lower in ['transfer-encoding', 'content-security-policy', 'content-security-policy-report-only', 'set-cookie']:
                     continue
-
                 if key_lower == 'location' and self.url_handler:
                     value = self.url_handler.rewrite_location_header(value, '')
                 elif key_lower == 'content-location' and self.url_handler:
                     value = self.url_handler.rewrite_content_location_header(value, '')
                 elif key_lower == 'refresh' and self.url_handler and hasattr(self.url_handler, 'location_handler') and self.url_handler.location_handler:
                     value = self.url_handler.location_handler.rewrite_refresh_header(value, '')
-
                 writer.write(f"{key}: {value}\r\n".encode('utf-8'))
 
-            writer.write(b"Via: SilkRoad-Next/1.0\r\n")
-
+            writer.write(b"Via: SilkRoad-Next/2.0\r\n")
             writer.write(b"\r\n")
 
-            chunk_size = 8192
+            chunk_size = 65536
             total_bytes = 0
 
             async for chunk in response.content.iter_chunked(chunk_size):
@@ -480,10 +429,12 @@ class NormalHandler:
 
     async def _send_cached_response(self, writer: asyncio.StreamWriter,
                                      cached_data: bytes,
-                                     _target_url: str) -> None:
+                                     target_url: str,
+                                     content_type: Optional[str] = None) -> None:
         try:
+            ct = content_type or 'application/octet-stream'
             headers = {
-                'Content-Type': 'text/html; charset=utf-8',
+                'Content-Type': ct,
                 'Content-Length': str(len(cached_data)),
                 'Connection': 'keep-alive',
                 'Via': 'SilkRoad-Next/2.0 (cached)',
@@ -545,59 +496,16 @@ class NormalHandler:
     async def _send_error(self, writer: asyncio.StreamWriter,
                           status_code: int, message: str) -> None:
         try:
-            error_html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>Error {status_code}</title>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            text-align: center;
-            padding: 50px;
-            background-color: #f5f5f5;
-        }}
-        .error-container {{
-            background: white;
-            padding: 40px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            max-width: 600px;
-            margin: 0 auto;
-        }}
-        h1 {{
-            color: #e74c3c;
-            margin-bottom: 20px;
-        }}
-        p {{
-            color: #666;
-            margin-bottom: 30px;
-        }}
-        .powered-by {{
-            color: #999;
-            font-size: 12px;
-            margin-top: 30px;
-        }}
-    </style>
-</head>
-<body>
-    <div class="error-container">
-        <h1>Error {status_code}</h1>
-        <p>{message}</p>
-        <div class="powered-by">
-            Powered by SilkRoad-Next/1.0
-        </div>
-    </div>
-</body>
-</html>"""
-
-            content = error_html.encode('utf-8')
+            content = _ERROR_PAGES.get(status_code)
+            if content is None:
+                error_html = f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>Error {status_code}</title></head><body><h1>Error {status_code}</h1><p>{message}</p></body></html>"
+                content = error_html.encode('utf-8')
 
             response = f"HTTP/1.1 {status_code} {message}\r\n"
             response += "Content-Type: text/html; charset=utf-8\r\n"
             response += f"Content-Length: {len(content)}\r\n"
             response += "Connection: close\r\n"
-            response += "Via: SilkRoad-Next/1.0\r\n"
+            response += "Via: SilkRoad-Next/2.0\r\n"
             response += "\r\n"
 
             writer.write(response.encode('utf-8'))

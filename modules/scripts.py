@@ -173,9 +173,11 @@ class ScriptInjector:
                 await self._create_default_config()
                 return True
             
-            # 读取配置文件
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
+            def _read():
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+
+            config = await asyncio.to_thread(_read)
             
             # 加载脚本配置
             self._scripts = config.get('scripts', {})
@@ -260,9 +262,11 @@ class ScriptInjector:
         config_path = Path(self.config_file)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # 写入配置文件
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(default_config, f, ensure_ascii=False, indent=2)
+        def _write():
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(default_config, f, ensure_ascii=False, indent=2)
+
+        await asyncio.to_thread(_write)
         
         # 更新内部配置
         self._scripts = default_config['scripts']
@@ -294,8 +298,11 @@ class ScriptInjector:
             
             try:
                 if script_path.exists():
-                    with open(script_path, 'r', encoding='utf-8') as f:
-                        self._script_cache[script_name] = f.read()
+                    def _read_script(p=script_path):
+                        with open(p, 'r', encoding='utf-8') as f:
+                            return f.read()
+
+                    self._script_cache[script_name] = await asyncio.to_thread(_read_script)
                     loaded_count += 1
                     self._stats['cache_hits'] += 1
                 else:
@@ -756,8 +763,11 @@ class ScriptInjector:
                 script_path = self.scripts_dir / file
                 
                 if script_path.exists():
-                    with open(script_path, 'r', encoding='utf-8') as f:
-                        self._script_cache[name] = f.read()
+                    def _read_script(p=script_path):
+                        with open(p, 'r', encoding='utf-8') as f:
+                            return f.read()
+
+                    self._script_cache[name] = await asyncio.to_thread(_read_script)
                     self._stats['cache_hits'] += 1
                 else:
                     self._logger.warning(f"脚本文件不存在: {script_path}")
@@ -872,8 +882,11 @@ class ScriptInjector:
                 if 'file' in kwargs:
                     script_path = self.scripts_dir / kwargs['file']
                     if script_path.exists():
-                        with open(script_path, 'r', encoding='utf-8') as f:
-                            self._script_cache[name] = f.read()
+                        def _read_script(p=script_path):
+                            with open(p, 'r', encoding='utf-8') as f:
+                                return f.read()
+
+                        self._script_cache[name] = await asyncio.to_thread(_read_script)
                 
                 # 如果更新了条件，重新编译模式
                 if 'conditions' in kwargs:
@@ -935,9 +948,12 @@ class ScriptInjector:
         
         config_path = Path(self.config_file)
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
+
+        def _write():
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+
+        await asyncio.to_thread(_write)
     
     def get_stats(self) -> dict:
         """
@@ -1051,8 +1067,11 @@ class ScriptInjector:
             
             try:
                 if script_path.exists():
-                    with open(script_path, 'r', encoding='utf-8') as f:
-                        self._script_cache[name] = f.read()
+                    def _read_script(p=script_path):
+                        with open(p, 'r', encoding='utf-8') as f:
+                            return f.read()
+
+                    self._script_cache[name] = await asyncio.to_thread(_read_script)
                     self._logger.info(f"脚本重载成功: {name}")
                     return True
                 else:

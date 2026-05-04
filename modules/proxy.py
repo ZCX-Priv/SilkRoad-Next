@@ -37,25 +37,29 @@ if TYPE_CHECKING:
 
 
 class ProxyServer:
-    """
-    代理服务器核心类
 
-    负责处理客户端请求、转发到目标服务器、处理响应并返回给客户端。
-    支持HTTP/HTTPS协议、重定向处理、大文件流式传输、URL修正等功能。
+    _FILE_EXTENSIONS = frozenset({
+        'js', 'css', 'html', 'htm', 'xml', 'json', 'txt', 'md',
+        'png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp', 'bmp',
+        'mp4', 'mp3', 'avi', 'mov', 'wmv', 'flv', 'wav', 'ogg',
+        'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+        'zip', 'rar', 'tar', 'gz', 'bz2', '7z',
+        'woff', 'woff2', 'ttf', 'eot', 'otf',
+        'php', 'asp', 'aspx', 'jsp', 'cgi', 'pl', 'py', 'rb',
+        'map', 'manifest', 'appcache', 'webmanifest'
+    })
 
-    Attributes:
-        host (str): 监听地址
-        port (int): 监听端口
-        config: 配置管理器对象
-        logger: 日志记录器对象
-        server: asyncio.Server 对象
-        session: aiohttp.ClientSession 对象
-        url_handler: URL处理器对象
-        ua_handler: UA处理器对象
-        command_handler: 命令处理器对象
-        active_connections (int): 当前活动连接数
-        is_running (bool): 服务器运行状态
-    """
+    _TLDS = frozenset({
+        'com', 'org', 'net', 'edu', 'gov', 'mil', 'io', 'co', 'ai', 'dev',
+        'app', 'tech', 'info', 'biz', 'me', 'tv', 'cc', 'cn', 'jp', 'uk',
+        'de', 'fr', 'ru', 'br', 'in', 'au', 'ca', 'nl', 'es', 'it', 'ch',
+        'se', 'no', 'dk', 'pl', 'be', 'at', 'eu', 'us', 'mx', 'tw', 'hk',
+        'sg', 'kr', 'my', 'id', 'th', 'vn', 'ph', 'nz', 'za', 'ar', 'cl',
+        'pe', 've', 'ec', 'pt', 'gr', 'tr', 'ro', 'hu', 'cz', 'sk', 'ua',
+        'by', 'kz', 'ir', 'sa', 'ae', 'eg', 'ng', 'ke'
+    })
+
+    _ERROR_PAGES: Dict[int, bytes] = {}
 
     def __init__(self, host: str, port: int, config, logger):
         """
@@ -117,12 +121,16 @@ class ProxyServer:
                 total=self.request_timeout,
                 connect=self.timeout
             )
+            max_conn = self.config.get('server.proxy.maxConnections', 5000)
+            limit_per_host = self.config.get('performance.connectionPool.maxPoolSize', 100)
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=aiohttp.TCPConnector(
-                    limit=100,  # 连接池大小
-                    ttl_dns_cache=300,  # DNS缓存时间
-                    enable_cleanup_closed=True
+                    limit=max_conn,
+                    limit_per_host=limit_per_host,
+                    ttl_dns_cache=300,
+                    enable_cleanup_closed=True,
+                    force_close=False
                 )
             )
 
@@ -354,12 +362,17 @@ class ProxyServer:
 
         # ========== V2: 缓存检查 ==========
         if self.cache_manager and method == 'GET':
-            cached_data = await self.cache_manager.get(target_url, method, headers)
+            cached_result = await self.cache_manager.get(target_url, method, headers)
 
-            if cached_data is not None:
+            if cached_result is not None:
                 self.logger.debug(f"缓存命中: {target_url}")
                 if self.normal_handler:
-                    await self.normal_handler._send_cached_response(writer, cached_data, target_url)
+                    if isinstance(cached_result, tuple):
+                        cached_data, cached_content_type = cached_result
+                    else:
+                        cached_data = cached_result
+                        cached_content_type = None
+                    await self.normal_handler._send_cached_response(writer, cached_data, target_url, cached_content_type)
                 return
 
         # 4. 读取请求体（如果有）
@@ -506,20 +519,6 @@ class ProxyServer:
         return f"{target_host}{target_path}"
 
     def _is_valid_host(self, segment: str) -> bool:
-        """
-        判断字符串是否是有效的主机名
-
-        有效主机名：
-        - 包含至少一个点，且不以点开头（如 www.apple.com）
-        - IPv6 地址（以 [ 开头）
-        - 包含端口号（如 example.com:8080）
-
-        Args:
-            segment: 路径的第一段
-
-        Returns:
-            是否是有效的主机名
-        """
         if not segment:
             return False
 
@@ -536,40 +535,19 @@ class ProxyServer:
         if '.' not in segment:
             return False
 
-        file_extensions = {
-            'js', 'css', 'html', 'htm', 'xml', 'json', 'txt', 'md',
-            'png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp', 'bmp',
-            'mp4', 'mp3', 'avi', 'mov', 'wmv', 'flv', 'wav', 'ogg',
-            'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
-            'zip', 'rar', 'tar', 'gz', 'bz2', '7z',
-            'woff', 'woff2', 'ttf', 'eot', 'otf',
-            'php', 'asp', 'aspx', 'jsp', 'cgi', 'pl', 'py', 'rb',
-            'map', 'manifest', 'appcache', 'webmanifest'
-        }
-
         parts = segment.split('.')
         if len(parts) >= 2:
             last_part = parts[-1].lower()
-            if last_part in file_extensions:
+            if last_part in self._FILE_EXTENSIONS:
                 return False
-
-        tlds = {
-            'com', 'org', 'net', 'edu', 'gov', 'mil', 'io', 'co', 'ai', 'dev',
-            'app', 'tech', 'info', 'biz', 'me', 'tv', 'cc', 'cn', 'jp', 'uk',
-            'de', 'fr', 'ru', 'br', 'in', 'au', 'ca', 'nl', 'es', 'it', 'ch',
-            'se', 'no', 'dk', 'pl', 'be', 'at', 'eu', 'us', 'mx', 'tw', 'hk',
-            'sg', 'kr', 'my', 'id', 'th', 'vn', 'ph', 'nz', 'za', 'ar', 'cl',
-            'pe', 've', 'ec', 'pt', 'gr', 'tr', 'ro', 'hu', 'cz', 'sk', 'ua',
-            'by', 'kz', 'ir', 'sa', 'ae', 'eg', 'ng', 'ke'
-        }
 
         if len(parts) >= 2:
             potential_tld = parts[-1].lower()
-            if potential_tld in tlds:
+            if potential_tld in self._TLDS:
                 return True
             if potential_tld.isdigit():
                 return True
-            if len(potential_tld) == 2 and potential_tld not in file_extensions:
+            if len(potential_tld) == 2 and potential_tld not in self._FILE_EXTENSIONS:
                 return True
 
         return False
@@ -839,82 +817,51 @@ class ProxyServer:
 
     async def _send_error(self, writer: asyncio.StreamWriter,
                           status_code: int, message: str) -> None:
-        """
-        发送错误响应
-
-        构建错误页面并发送给客户端。
-
-        Args:
-            writer: 流写入器
-            status_code: HTTP 状态码
-            message: 错误消息
-        """
         try:
-            # 构建错误页面
-            error_html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>Error {status_code}</title>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            text-align: center;
-            padding: 50px;
-            background-color: #f5f5f5;
-        }}
-        .error-container {{
-            background: white;
-            padding: 40px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            max-width: 600px;
-            margin: 0 auto;
-        }}
-        h1 {{
-            color: #e74c3c;
-            margin-bottom: 20px;
-        }}
-        p {{
-            color: #666;
-            margin-bottom: 30px;
-        }}
-        .powered-by {{
-            color: #999;
-            font-size: 12px;
-            margin-top: 30px;
-        }}
-    </style>
-</head>
-<body>
-    <div class="error-container">
-        <h1>Error {status_code}</h1>
-        <p>{message}</p>
-        <div class="powered-by">
-            Powered by SilkRoad-Next/1.0
-        </div>
-    </div>
-</body>
-</html>"""
+            if not self._ERROR_PAGES:
+                self.__class__._init_error_pages()
 
-            # 编码
-            content = error_html.encode('utf-8')
+            content = self._ERROR_PAGES.get(status_code)
+            if content is None:
+                error_html = f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>Error {status_code}</title></head><body><h1>Error {status_code}</h1><p>{message}</p></body></html>"
+                content = error_html.encode('utf-8')
 
-            # 构建响应
             response = f"HTTP/1.1 {status_code} {message}\r\n"
             response += "Content-Type: text/html; charset=utf-8\r\n"
             response += f"Content-Length: {len(content)}\r\n"
             response += "Connection: close\r\n"
-            response += "Via: SilkRoad-Next/1.0\r\n"
+            response += "Via: SilkRoad-Next/2.0\r\n"
             response += "\r\n"
 
-            # 发送响应
             writer.write(response.encode('utf-8'))
             writer.write(content)
             await writer.drain()
 
         except Exception as e:
             self.logger.error(f"发送错误响应失败: {e}")
+
+    @classmethod
+    def _init_error_pages(cls):
+        template = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Error {status}</title>
+    <style>
+        body {{font-family:Arial,sans-serif;text-align:center;padding:50px;background:#f5f5f5}}
+        .ec{{background:#fff;padding:40px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.1);max-width:600px;margin:0 auto}}
+        h1{{color:#e74c3c;margin-bottom:20px}}p{{color:#666;margin-bottom:30px}}
+        .pb{{color:#999;font-size:12px;margin-top:30px}}
+    </style>
+</head>
+<body><div class="ec"><h1>Error {status}</h1><p>{msg}</p><div class="pb">Powered by SilkRoad-Next/2.0</div></div></body>
+</html>"""
+        for code, msg in [(400, "Bad Request"), (403, "Forbidden"), (404, "Not Found"),
+                           (408, "Request Timeout"), (413, "Payload Too Large"),
+                           (500, "Internal Server Error"), (502, "Bad Gateway"),
+                           (504, "Gateway Timeout"), (508, "Loop Detected")]:
+            html = template.format(status=code, msg=msg)
+            cls._ERROR_PAGES[code] = html.encode('utf-8')
 
     async def get_stats(self) -> Dict[str, Any]:
         """

@@ -3,10 +3,10 @@
     "proxy": {
       "host": "127.0.0.1",
       "port": 8080,
-      "backlog": 2048,
+      "backlog": 4096,
       "maxConnections": 5000,
-      "connectionTimeout": 30,
-      "requestTimeout": 60,
+      "connectionTimeout": 15,
+      "requestTimeout": 30,
       "maxRedirects": 10
     },
     "command": {
@@ -46,7 +46,7 @@
   "urlRewrite": {
     "enabled": true,
     "maxContentSize": 10485760,
-    "streamThreshold": 10485760,
+    "streamThreshold": 524288,
     "skipContentTypes": [
       "image/*",
       "video/*",
@@ -75,7 +75,7 @@
     "/error": "error"
   },
   "logging": {
-    "level": "DEBUG",
+    "level": "INFO",
     "format": "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
     "rotation": "00:00",
     "retention": "30 days",
@@ -86,9 +86,9 @@
   },
   "cache": {
     "enabled": true,
-    "maxSize": 1073741824,
-    "defaultTTL": 3600,
-    "cleanupInterval": 300
+    "maxSize": 209715200,
+    "defaultTTL": 1800,
+    "cleanupInterval": 120
   },
   "security": {
     "rateLimit": {
@@ -102,14 +102,14 @@
   "performance": {
     "connectionPool": {
       "enabled": true,
-      "maxPoolSize": 100,
-      "maxKeepaliveConnections": 20,
-      "keepaliveTimeout": 30
+      "maxPoolSize": 500,
+      "maxKeepaliveConnections": 100,
+      "keepaliveTimeout": 60
     },
     "threadPool": {
       "enabled": true,
-      "maxWorkers": 8,
-      "queueSize": 1000
+      "maxWorkers": 4,
+      "queueSize": 2000
     }
   },
   "v2": {
@@ -149,8 +149,8 @@
     },
     "chunked": {
       "enabled": true,
-      "defaultChunkSize": 8192,
-      "maxChunkSize": 65536
+      "defaultChunkSize": 65536,
+      "maxChunkSize": 131072
     },
     "buffer": {
       "memoryLimit": 104857600,
@@ -163,8 +163,7 @@
       "adaptiveMode": true,
       "burstAllowance": 1.5,
       "minRate": 5242880,
-      "monitoringInterval": 60,
-      "description": "流量整形配置 - enabled: 是否启用, maxRate: 最大速率(10MB/s), adaptiveMode: 自适应模式, burstAllowance: 突发流量容忍度, minRate: 最小速率(5MB/s), monitoringInterval: 监控间隔(秒)"
+      "monitoringInterval": 60
     }
   }
 }

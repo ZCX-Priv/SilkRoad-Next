@@ -165,7 +165,8 @@ class SilkRoad:
                 self.connection_pool = ConnectionPool(
                     max_connections_per_host=self.config.get('performance.connectionPool.maxPoolSize', 100),
                     connection_timeout=self.config.get('server.proxy.connectionTimeout', 30),
-                    keep_alive_timeout=self.config.get('performance.connectionPool.keepaliveTimeout', 30)
+                    keep_alive_timeout=self.config.get('performance.connectionPool.keepaliveTimeout', 30),
+                    total_connection_limit=self.config.get('server.proxy.maxConnections', 5000)
                 )
                 self.logger.info("连接池已启用")
 

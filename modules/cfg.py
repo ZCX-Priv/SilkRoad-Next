@@ -84,8 +84,11 @@ class ConfigManager:
 
         # 配置文件存在，尝试加载
         try:
-            with open(self.config_path, 'r', encoding='utf-8') as f:
-                self.config = json.load(f)
+            def _read():
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+
+            self.config = await asyncio.to_thread(_read)
 
             # 验证配置项
             self._validate_config()
@@ -391,9 +394,11 @@ class ConfigManager:
             if config_dir:
                 os.makedirs(config_dir, exist_ok=True)
 
-            # 保存配置到文件
-            with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(self.default_config, f, indent=2, ensure_ascii=False)
+            def _write():
+                with open(self.config_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.default_config, f, indent=2, ensure_ascii=False)
+
+            await asyncio.to_thread(_write)
 
         except PermissionError:
             raise ConfigError(f"无权限创建配置文件: {self.config_path}")
@@ -498,8 +503,11 @@ class ConfigManager:
             if config_dir:
                 os.makedirs(config_dir, exist_ok=True)
 
-            with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(self.config, f, indent=2, ensure_ascii=False)
+            def _write():
+                with open(self.config_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.config, f, indent=2, ensure_ascii=False)
+
+            await asyncio.to_thread(_write)
 
         except PermissionError:
             raise ConfigError(f"无权限保存配置文件: {self.config_path}")

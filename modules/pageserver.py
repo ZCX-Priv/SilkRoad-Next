@@ -77,8 +77,17 @@ class PageServer:
             '.mp4', '.webm', '.mp3', '.wav', '.pdf', '.zip'
         }
 
-        # 初始化MIME类型
+        self._sorted_routes: list = []
+        self._rebuild_sorted_routes()
+
         self._init_mime_types()
+
+    def _rebuild_sorted_routes(self):
+        self._sorted_routes = sorted(
+            self.routes.keys(),
+            key=lambda r: len(r.rstrip('/') if len(r) > 1 else r),
+            reverse=True
+        )
 
     def _init_mime_types(self) -> None:
         """
@@ -260,7 +269,7 @@ class PageServer:
 
         # 12. 读取小文件内容
         try:
-            content = file_path.read_bytes()
+            content = await asyncio.to_thread(file_path.read_bytes)
         except PermissionError:
             self.logger.error(f"无权限读取文件: {file_path}")
             return None
@@ -302,13 +311,7 @@ class PageServer:
             return self.routes[normalized_path]
 
         # 2. 尝试前缀匹配（按长度降序排列，优先匹配最长的前缀）
-        sorted_routes = sorted(
-            self.routes.keys(),
-            key=lambda r: len(r.rstrip('/') if len(r) > 1 else r),
-            reverse=True
-        )
-
-        for route_pattern in sorted_routes:
+        for route_pattern in self._sorted_routes:
             # 规范化路由模式
             normalized_pattern = route_pattern.rstrip('/') if len(route_pattern) > 1 else route_pattern
 
@@ -618,9 +621,12 @@ class PageServer:
             chunk_size = 65536  # 64KB 块大小
             bytes_sent = 0
 
+            def _read_chunk(f):
+                return f.read(chunk_size)
+
             with open(file_path, 'rb') as f:
                 while True:
-                    chunk = f.read(chunk_size)
+                    chunk = await asyncio.to_thread(_read_chunk, f)
                     if not chunk:
                         break
 
@@ -739,16 +745,16 @@ class PageServer:
             chunk_size = 65536  # 64KB 块大小
             bytes_sent = 0
 
+            def _read_range_chunk(f, sz):
+                return f.read(sz)
+
             with open(file_path, 'rb') as f:
-                # 定位到起始位置
                 f.seek(start)
 
-                # 读取并发送指定范围的内容
                 remaining = content_length
                 while remaining > 0:
-                    # 计算本次读取的大小
                     read_size = min(chunk_size, remaining)
-                    chunk = f.read(read_size)
+                    chunk = await asyncio.to_thread(_read_range_chunk, f, read_size)
                     if not chunk:
                         break
 

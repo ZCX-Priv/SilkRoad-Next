@@ -15,6 +15,7 @@
 
 import asyncio
 import functools
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -96,7 +97,7 @@ class ThreadPoolManager:
         }
         
         # 锁机制，确保统计信息的线程安全
-        self._stats_lock = asyncio.Lock()
+        self._stats_lock = threading.Lock()
         
         # 初始化线程池
         self._init_executor()
@@ -205,7 +206,7 @@ class ThreadPoolManager:
         start_time = time.perf_counter()
         
         # 更新任务计数
-        async with self._stats_lock:
+        with self._stats_lock:
             self._stats['total_tasks'] += 1
         
         try:
@@ -233,72 +234,48 @@ class ThreadPoolManager:
             # 计算执行时间
             execution_time = time.perf_counter() - start_time
             
-            # 更新统计信息
-            await self._update_stats_success(execution_time)
+            self._update_stats_success(execution_time)
             
             return result
             
         except asyncio.TimeoutError:
-            # 任务超时
             execution_time = time.perf_counter() - start_time
-            await self._update_stats_timeout(execution_time)
+            self._update_stats_timeout(execution_time)
             raise
             
         except asyncio.CancelledError:
-            # 任务被取消
             execution_time = time.perf_counter() - start_time
-            await self._update_stats_failure(execution_time)
+            self._update_stats_failure(execution_time)
             raise
             
         except Exception:
-            # 任务执行失败
             execution_time = time.perf_counter() - start_time
-            await self._update_stats_failure(execution_time)
+            self._update_stats_failure(execution_time)
             raise
     
-    async def _update_stats_success(self, execution_time: float) -> None:
-        """
-        更新成功任务的统计信息
-        
-        Args:
-            execution_time: 本次执行时间（秒）
-        """
-        async with self._stats_lock:
+    def _update_stats_success(self, execution_time: float) -> None:
+        with self._stats_lock:
             self._stats['completed_tasks'] += 1
             self._stats['total_execution_time'] += execution_time
-            
-            # 更新最小/最大执行时间
+
             if execution_time < self._stats['min_execution_time']:
                 self._stats['min_execution_time'] = execution_time
             if execution_time > self._stats['max_execution_time']:
                 self._stats['max_execution_time'] = execution_time
-            
-            # 计算平均执行时间（增量计算）
+
             completed = self._stats['completed_tasks']
             current_avg = self._stats['average_execution_time']
             new_avg = current_avg + (execution_time - current_avg) / completed
             self._stats['average_execution_time'] = new_avg
-    
-    async def _update_stats_timeout(self, execution_time: float) -> None:
-        """
-        更新超时任务的统计信息
-        
-        Args:
-            execution_time: 本次执行时间（秒）
-        """
-        async with self._stats_lock:
+
+    def _update_stats_timeout(self, execution_time: float) -> None:
+        with self._stats_lock:
             self._stats['failed_tasks'] += 1
             self._stats['timeout_tasks'] += 1
             self._stats['total_execution_time'] += execution_time
-    
-    async def _update_stats_failure(self, execution_time: float) -> None:
-        """
-        更新失败任务的统计信息
-        
-        Args:
-            execution_time: 本次执行时间（秒）
-        """
-        async with self._stats_lock:
+
+    def _update_stats_failure(self, execution_time: float) -> None:
+        with self._stats_lock:
             self._stats['failed_tasks'] += 1
             self._stats['total_execution_time'] += execution_time
     
