@@ -113,10 +113,53 @@ class NormalHandler:
         self.script_injector = script_injector
 
     async def handle(self, writer, method, target_url, headers, body, session_id=None):
+        # 处理 OPTIONS 预检请求
+        if method == 'OPTIONS':
+            await self._handle_options_request(writer, headers)
+            return
+        
         if self.connection_pool:
             await self._forward_with_pool(writer, method, target_url, headers, body, session_id)
         else:
             await self._forward_direct(writer, method, target_url, headers, body)
+    
+    async def _handle_options_request(self, writer: asyncio.StreamWriter,
+                                       request_headers: Dict[str, str]) -> None:
+        """
+        处理 OPTIONS 预检请求
+        
+        Args:
+            writer: 流写入器
+            request_headers: 请求头
+        """
+        try:
+            # 构建响应头
+            headers = {
+                'Allow': 'GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS',
+                'Access-Control-Allow-Headers': '*',
+                'Access-Control-Allow-Credentials': 'true',
+                'Access-Control-Max-Age': '86400',
+                'Content-Length': '0',
+                'Connection': 'keep-alive',
+                'Via': 'SilkRoad-Next/2.0'
+            }
+            
+            # 发送响应
+            response_line = 'HTTP/1.1 204 No Content\r\n'
+            header_lines = ''.join(f'{k}: {v}\r\n' for k, v in headers.items())
+            
+            writer.write(response_line.encode())
+            writer.write(header_lines.encode())
+            writer.write(b'\r\n')
+            await writer.drain()
+            
+            self.logger.debug("OPTIONS 预检请求已处理")
+            
+        except Exception as e:
+            self.logger.error(f"处理 OPTIONS 请求失败: {e}")
+
 
     async def _forward_direct(self, writer: asyncio.StreamWriter,
                                method: str, target_url: str,
@@ -334,6 +377,26 @@ class NormalHandler:
 
             resp_headers.pop('Content-Security-Policy', None)
             resp_headers.pop('Content-Security-Policy-Report-Only', None)
+            
+            # 删除原有的 CORS 响应头
+            cors_headers_to_remove = [
+                'Access-Control-Allow-Origin',
+                'Access-Control-Allow-Methods',
+                'Access-Control-Allow-Headers',
+                'Access-Control-Allow-Credentials',
+                'Access-Control-Max-Age',
+                'Access-Control-Expose-Headers',
+                'Access-Control-Allow-Private-Network'
+            ]
+            for cors_header in cors_headers_to_remove:
+                resp_headers.pop(cors_header, None)
+            
+            # 添加我们自己的 CORS 响应头
+            resp_headers['Access-Control-Allow-Origin'] = '*'
+            resp_headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS'
+            resp_headers['Access-Control-Allow-Headers'] = '*'
+            resp_headers['Access-Control-Allow-Credentials'] = 'true'
+            resp_headers['Access-Control-Max-Age'] = '86400'
 
             if 'Location' in resp_headers and self.url_handler:
                 resp_headers['Location'] = self.url_handler.rewrite_location_header(

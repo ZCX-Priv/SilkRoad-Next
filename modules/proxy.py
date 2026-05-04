@@ -600,57 +600,71 @@ class ProxyServer:
                                 target_url: str) -> Dict[str, str]:
         """
         构建转发请求头
-
-        过滤不需要转发的请求头，添加必要的请求头。
-
+        
+        根据配置文件的 forwardHeaders 和 dropHeaders 处理请求头
+        
         Args:
             original_headers: 原始请求头
             target_url: 目标 URL
-
+        
         Returns:
             转发请求头字典
         """
         forward_headers = {}
-
-        skip_headers = {
-            'Host', 'Connection', 'Keep-Alive', 'Proxy-Connection',
-            'Proxy-Authorization', 'TE', 'Transfer-Encoding', 'Upgrade'
-        }
-
-        target_domain = self.cookie_handler.extract_domain_from_url(target_url)
-
+        
+        # 从配置文件读取要转发的头列表和要丢弃的头列表
+        forward_list = self.config.get('proxy.forwardHeaders', [])
+        drop_list = set(self.config.get('proxy.dropHeaders', []))
+        
+        # 添加配置中指定的要转发的头
+        for header in forward_list:
+            if header in original_headers:
+                forward_headers[header] = original_headers[header]
+        
+        # 添加其他未被丢弃的头
         for key, value in original_headers.items():
-            if key in skip_headers:
+            if key in drop_list:
                 continue
-            
-            if key.lower() == 'cookie' and target_domain:
-                filtered_cookie = self.cookie_handler.filter_request_cookies(
-                    value, target_domain
-                )
-                if filtered_cookie:
-                    forward_headers[key] = filtered_cookie
-                continue
-            
-            forward_headers[key] = value
-
+            if key not in forward_headers:  # 避免重复
+                forward_headers[key] = value
+        
+        # 设置必要的头
         parsed = urlsplit(target_url)
-
         forward_headers['Host'] = parsed.netloc
-
         forward_headers['Connection'] = 'keep-alive'
-
-        forward_headers['Accept-Encoding'] = 'gzip, deflate'
-
+        
+        # 确保 Accept 头存在
+        if 'Accept' not in forward_headers:
+            forward_headers['Accept'] = '*/*'
+        
+        # 确保 Accept-Language 头存在
+        if 'Accept-Language' not in forward_headers:
+            forward_headers['Accept-Language'] = 'zh-CN,zh;q=0.9,en;q=0.8'
+        
+        # 确保 Accept-Encoding 头存在
+        if 'Accept-Encoding' not in forward_headers:
+            forward_headers['Accept-Encoding'] = 'gzip, deflate, br'
+        
+        # 确保 User-Agent 头存在
         if 'User-Agent' not in forward_headers:
-            forward_headers['User-Agent'] = self.ua_handler.get_random_ua()
-
-        # 重写 Referer 头以匹配目标域名（防盗链绕过）
+            forward_headers['User-Agent'] = self.config.get(
+                'proxy.defaultUserAgent',
+                self.ua_handler.get_random_ua()
+            )
+        
+        # 处理 Origin 头（跨域请求的关键）
+        if 'Origin' in original_headers:
+            # 重写 Origin 为目标域名
+            forward_headers['Origin'] = f"{parsed.scheme}://{parsed.netloc}"
+        
+        # 重写 Referer 头
         if 'Referer' in forward_headers:
             forward_headers['Referer'] = self._rewrite_referer(
                 forward_headers['Referer'], target_url
             )
-
+        
         return forward_headers
+
 
     def _rewrite_referer(self, referer: str, target_url: str) -> str:
         """

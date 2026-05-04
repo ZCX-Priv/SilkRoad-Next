@@ -20,6 +20,7 @@
       "Accept",
       "Accept-Language",
       "Accept-Datetime",
+      "Accept-Encoding",
       "Cache-Control",
       "Content-Type",
       "If-Match",
@@ -28,7 +29,17 @@
       "If-Range",
       "If-Unmodified-Since",
       "Range",
-      "X-Requested-With"
+      "X-Requested-With",
+      "Origin",
+      "X-Forwarded-For",
+      "X-Real-IP",
+      "X-Forwarded-Proto",
+      "DNT",
+      "Upgrade-Insecure-Requests",
+      "Sec-Fetch-Dest",
+      "Sec-Fetch-Mode",
+      "Sec-Fetch-Site",
+      "Sec-Fetch-User"
     ],
     "dropHeaders": [
       "Accept-Encoding",

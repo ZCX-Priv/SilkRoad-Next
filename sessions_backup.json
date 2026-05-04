@@ -1,41 +1,21 @@
 {
   "version": "2.0.0",
-  "saved_at": "2026-05-04T12:51:29.528856",
+  "saved_at": "2026-05-04T13:08:04.011196",
   "config": {
     "session_timeout": 1800,
     "cleanup_interval": 60,
     "max_data_size": 1048576
   },
-  "sessions": {
-    "523aac3b-02c8-49b2-b6c5-10a8f858299f": {
-      "session_id": "523aac3b-02c8-49b2-b6c5-10a8f858299f",
-      "client_ip": "127.0.0.1",
-      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0",
-      "created_at": "2026-05-04T12:25:31.551074",
-      "updated_at": "2026-05-04T12:26:28.439006",
-      "data": {
-        "first_visit": "2026-05-04T12:25:31.550919",
-        "last_visit": "2026-05-04T12:26:28.438963",
-        "cookies": {
-          "path": {
-            "value": "/",
-            "domain": "www.51cto.com"
-          }
-        }
-      }
-    }
-  },
-  "last_access": {
-    "523aac3b-02c8-49b2-b6c5-10a8f858299f": 1777868788.439981
-  },
+  "sessions": {},
+  "last_access": {},
   "stats": {
-    "total_sessions": 2,
-    "active_sessions": 1,
-    "expired_sessions": 1,
-    "total_creates": 2,
-    "total_deletes": 1,
-    "total_updates": 84,
-    "total_gets": 86,
+    "total_sessions": 0,
+    "active_sessions": 0,
+    "expired_sessions": 0,
+    "total_creates": 0,
+    "total_deletes": 0,
+    "total_updates": 0,
+    "total_gets": 0,
     "data_size_violations": 0
   }
 }
