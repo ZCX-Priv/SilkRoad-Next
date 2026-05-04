@@ -494,9 +494,17 @@ class ProxyServer:
         if not path:
             return None
 
+        query_string = ''
+        if '?' in path:
+            path, query_string = path.split('?', 1)
+            query_string = '?' + query_string
+
         parts = path.split('/', 1)
         first_segment = parts[0]
         target_path = '/' + parts[1] if len(parts) > 1 else '/'
+
+        if query_string:
+            target_path += query_string
 
         if self._is_valid_host(first_segment):
             target_host = first_segment
@@ -507,6 +515,8 @@ class ProxyServer:
             if referer_domain:
                 target_host = referer_domain
                 target_path = '/' + path
+                if query_string:
+                    target_path += query_string
             else:
                 return None
 
