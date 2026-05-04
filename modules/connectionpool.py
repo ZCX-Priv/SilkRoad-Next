@@ -64,7 +64,7 @@ class ConnectionPool:
                           host: str,
                           port: int = 443,
                           is_https: bool = True,
-                          session_id: Optional[str] = None) -> aiohttp.ClientSession:
+                          _session_id: Optional[str] = None) -> aiohttp.ClientSession:
         pool_key = self._make_key(host, port, is_https)
         lock = await self._get_lock(pool_key)
 
@@ -90,8 +90,8 @@ class ConnectionPool:
             self._logger.debug(f"新 Session 创建: {pool_key}")
             return session
 
-    async def _create_session(self, pool_key: str, host: str, port: int,
-                               is_https: bool) -> aiohttp.ClientSession:
+    async def _create_session(self, _pool_key: str, _host: str, _port: int,
+                               _is_https: bool) -> aiohttp.ClientSession:
         timeout = aiohttp.ClientTimeout(
             total=self.connection_timeout * 2,
             connect=self.connection_timeout
@@ -103,11 +103,10 @@ class ConnectionPool:
             enable_cleanup_closed=True,
             force_close=False
         )
-        session = aiohttp.ClientSession(
+        return aiohttp.ClientSession(
             timeout=timeout,
             connector=connector
         )
-        return session
 
     async def release_session(self, host: str, port: int, is_https: bool = True) -> None:
         pool_key = self._make_key(host, port, is_https)
@@ -117,17 +116,17 @@ class ConnectionPool:
         if self.stats['active_requests'] > 0:
             self.stats['active_requests'] -= 1
 
-    def register_connection(self, host: str, port: int,
-                             connection: aiohttp.TCPConnector) -> None:
+    def register_connection(self, _host: str, _port: int,
+                             _connection: aiohttp.BaseConnector) -> None:
         pass
 
-    async def return_connection(self, host: str, port: int,
-                                 connection: aiohttp.TCPConnector) -> bool:
+    async def return_connection(self, _host: str, _port: int,
+                                 _connection: aiohttp.BaseConnector) -> bool:
         return True
 
     async def get_connection(self, host: str, port: int = 443,
                               is_https: bool = True,
-                              session_id: Optional[str] = None) -> Optional[aiohttp.TCPConnector]:
+                              _session_id: Optional[str] = None) -> Optional[aiohttp.BaseConnector]:
         pool_key = self._make_key(host, port, is_https)
         session = self._sessions.get(pool_key)
         if session is not None and not session.closed and session.connector is not None:
@@ -197,7 +196,7 @@ class ConnectionPool:
 
     async def close_all(self) -> int:
         closed_count = 0
-        for pool_key, session in list(self._sessions.items()):
+        for _, session in list(self._sessions.items()):
             if not session.closed:
                 await session.close()
                 closed_count += 1
